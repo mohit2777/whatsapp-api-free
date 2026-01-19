@@ -117,8 +117,11 @@ npm start
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/accounts/:id/send` | Send text message |
-| POST | `/api/accounts/:id/send-media` | Send media message |
+| POST | `/api/send` | Send text message |
+| POST | `/api/send-media` | Send media (file upload) |
+| POST | `/api/send-buttons` | Send button message |
+| POST | `/api/send-list` | Send list message |
+| POST | `/api/webhook-reply` | Reply via webhook secret (for n8n) |
 
 ### Webhooks
 
@@ -163,45 +166,24 @@ curl -X GET http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/qr \
 
 ### Send Text Message
 ```bash
-curl -X POST http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/send \
+curl -X POST http://localhost:3000/api/send \
   -H "Content-Type: application/json" \
   -b cookies.txt \
   -d '{
+    "account_id": "YOUR_ACCOUNT_ID",
     "number": "919876543210",
     "message": "Hello from API!"
   }'
 ```
 
-### Send Media (URL)
+### Send Media (File Upload)
 ```bash
-curl -X POST http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/send-media \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:3000/api/send-media \
   -b cookies.txt \
-  -d '{
-    "number": "919876543210",
-    "caption": "Check this image!",
-    "media": {
-      "url": "https://example.com/image.jpg",
-      "mimetype": "image/jpeg",
-      "filename": "image.jpg"
-    }
-  }'
-```
-
-### Send Media (Base64)
-```bash
-curl -X POST http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/send-media \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{
-    "number": "919876543210",
-    "caption": "PDF Document",
-    "media": {
-      "data": "JVBERi0xLjQKJeLjz9...",
-      "mimetype": "application/pdf",
-      "filename": "document.pdf"
-    }
-  }'
+  -F "account_id=YOUR_ACCOUNT_ID" \
+  -F "number=919876543210" \
+  -F "caption=Check this image!" \
+  -F "media=@/path/to/image.jpg"
 ```
 
 ### Create Webhook (Messages Only)
@@ -265,10 +247,72 @@ curl -X POST http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/reconnect \
 
 ## n8n Integration
 
-### Send Message (HTTP Request Node)
+### Authentication Options
+
+You have two ways to authenticate API requests:
+
+1. **Session Cookie** - Login and use cookie (good for testing)
+2. **Webhook Secret** - Use `/api/webhook-reply` with the webhook secret (recommended for n8n)
+
+---
+
+### Option 1: Reply via Webhook Secret (Recommended for n8n)
+
+When you create a webhook, a `secret` is automatically generated. Use this to reply to messages without needing a session cookie.
 
 **Method:** `POST`  
-**URL:** `https://your-server.com/api/accounts/{{$json.accountId}}/send`
+**URL:** `https://your-server.com/api/webhook-reply`
+
+**Headers:**
+```json
+{
+  "Content-Type": "application/json"
+}
+```
+
+**Body (JSON) - Text Message:**
+```json
+{
+  "account_id": "{{$json.account_id}}",
+  "number": "{{$json.sender.replace('@s.whatsapp.net', '')}}",
+  "webhook_secret": "YOUR_WEBHOOK_SECRET",
+  "message": "Thanks for your message!"
+}
+```
+
+**Body (JSON) - With Media (URL):**
+```json
+{
+  "account_id": "{{$json.account_id}}",
+  "number": "{{$json.sender.replace('@s.whatsapp.net', '')}}",
+  "webhook_secret": "YOUR_WEBHOOK_SECRET",
+  "message": "Here is your file",
+  "media": {
+    "url": "https://example.com/document.pdf",
+    "mimetype": "application/pdf",
+    "filename": "document.pdf"
+  }
+}
+```
+
+**Body (JSON) - With Buttons:**
+```json
+{
+  "account_id": "{{$json.account_id}}",
+  "number": "{{$json.sender.replace('@s.whatsapp.net', '')}}",
+  "webhook_secret": "YOUR_WEBHOOK_SECRET",
+  "message": "Please select an option:",
+  "buttons": ["Option 1", "Option 2", "Option 3"],
+  "footer": "Powered by WhatsApp API"
+}
+```
+
+---
+
+### Option 2: Send Message with Session Cookie
+
+**Method:** `POST`  
+**URL:** `https://your-server.com/api/send`
 
 **Authentication:** Header Auth
 ```
@@ -285,56 +329,9 @@ Cookie: connect.sid={{$credentials.sessionCookie}}
 **Body (JSON):**
 ```json
 {
+  "account_id": "{{$json.accountId}}",
   "number": "{{$json.phoneNumber}}",
   "message": "{{$json.message}}"
-}
-```
-
-**Example with static values:**
-```json
-{
-  "number": "919876543210",
-  "message": "Hello from n8n!"
-}
-```
-
----
-
-### Send Media (HTTP Request Node)
-
-**Method:** `POST`  
-**URL:** `https://your-server.com/api/accounts/{{$json.accountId}}/send-media`
-
-**Headers:**
-```json
-{
-  "Content-Type": "application/json"
-}
-```
-
-**Body (JSON) - From URL:**
-```json
-{
-  "number": "{{$json.phoneNumber}}",
-  "caption": "Check this out!",
-  "media": {
-    "url": "https://example.com/image.jpg",
-    "mimetype": "image/jpeg",
-    "filename": "image.jpg"
-  }
-}
-```
-
-**Body (JSON) - Base64:**
-```json
-{
-  "number": "{{$json.phoneNumber}}",
-  "caption": "Document attached",
-  "media": {
-    "data": "{{$json.base64Data}}",
-    "mimetype": "application/pdf",
-    "filename": "document.pdf"
-  }
 }
 ```
 
@@ -352,6 +349,18 @@ POST /api/webhooks
 {
   "account_id": "your-account-uuid",
   "url": "https://your-n8n.com/webhook/xxx",
+  "events": ["message"],
+  "is_active": true
+}
+```
+
+**Response (save the secret!):**
+```json
+{
+  "id": "webhook-uuid",
+  "account_id": "your-account-uuid",
+  "url": "https://your-n8n.com/webhook/xxx",
+  "secret": "whsec_xxxxxxxxxxxxxxxx",
   "events": ["message"],
   "is_active": true
 }
@@ -444,12 +453,43 @@ POST /api/webhooks
 ## n8n Workflow Example
 
 ```
-[Webhook Trigger] → [Switch by sender] → [HTTP Request: Send Reply]
+[Webhook Trigger] → [Switch by message] → [HTTP Request: webhook-reply]
 ```
 
 1. **Webhook Trigger**: Receives incoming WhatsApp message
-2. **Switch Node**: Route based on `{{$json.sender}}` or `{{$json.message}}`
-3. **HTTP Request**: Send response back via `/api/accounts/:id/send`
+2. **Switch Node**: Route based on `{{$json.message}}` content
+3. **HTTP Request**: Reply via `/api/webhook-reply` using webhook secret
+
+### Complete n8n Workflow JSON
+
+```json
+{
+  "nodes": [
+    {
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-incoming"
+      }
+    },
+    {
+      "name": "Reply to Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-server.com/api/webhook-reply",
+        "jsonBody": {
+          "account_id": "={{$json.account_id}}",
+          "number": "={{$json.sender.replace('@s.whatsapp.net', '')}}",
+          "webhook_secret": "YOUR_WEBHOOK_SECRET",
+          "message": "Thanks for your message! We received: {{$json.message}}"
+        }
+      }
+    }
+  ]
+}
+```
 
 ---
 
