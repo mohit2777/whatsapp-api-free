@@ -739,10 +739,24 @@ class WhatsAppManager {
       // Connection opened
       if (connection === 'open') {
         const phoneNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0] || 'unknown';
+        const userJid = sock.user?.id;
+
+        // Fetch profile picture URL
+        let profilePictureUrl = null;
+        if (userJid) {
+          try {
+            profilePictureUrl = await sock.profilePictureUrl(userJid, 'image');
+            logger.info(`[${accountId}] Profile picture fetched`);
+          } catch (e) {
+            // User may not have a profile picture
+            logger.debug(`[${accountId}] No profile picture available`);
+          }
+        }
 
         await db.updateAccount(accountId, {
           status: 'ready',
           phone_number: phoneNumber,
+          metadata: { profile_picture_url: profilePictureUrl },
           last_active_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         });

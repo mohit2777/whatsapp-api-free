@@ -190,7 +190,7 @@ const db = {
       // Explicitly select columns WITHOUT session_data (which is huge - 1-5MB each)
       const { data, error } = await supabase
         .from('accounts')
-        .select('id, name, description, phone_number, status, created_at, updated_at')
+        .select('id, name, description, phone_number, status, metadata, created_at, updated_at')
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -219,7 +219,7 @@ const db = {
       // Exclude session_data to avoid huge payloads
       const { data, error } = await supabase
         .from('accounts')
-        .select('id, name, description, phone_number, status, created_at, updated_at')
+        .select('id, name, description, phone_number, status, metadata, created_at, updated_at')
         .eq('id', id)
         .single();
 

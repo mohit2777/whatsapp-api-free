@@ -614,9 +614,11 @@ function renderAccountsTable() {
         <tr>
             <td>
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--secondary)); display: flex; align-items: center; justify-content: center; font-weight: bold;">
-                        ${account.name ? account.name.charAt(0).toUpperCase() : 'W'}
-                    </div>
+                    ${account.metadata?.profile_picture_url 
+                        ? `<img src="${account.metadata.profile_picture_url}" alt="${account.name}" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid var(--primary);" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                           <div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--secondary)); display: none; align-items: center; justify-content: center; font-weight: bold;">${account.name ? account.name.charAt(0).toUpperCase() : 'W'}</div>`
+                        : `<div style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--primary), var(--secondary)); display: flex; align-items: center; justify-content: center; font-weight: bold;">${account.name ? account.name.charAt(0).toUpperCase() : 'W'}</div>`
+                    }
                     <div style="flex: 1;">
                         <div style="font-weight: 600;">${account.name || 'Unnamed'}</div>
                         ${escapedDescription ? `<div style="font-size: 11px; color: var(--text-secondary); margin-top: 3px; line-height: 1.4;">${escapedDescription}</div>` : ''}
