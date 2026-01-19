@@ -1,0 +1,52 @@
+{
+  "name": "whatsapp-multi-automation",
+  "version": "4.0.0",
+  "description": "Multi-account WhatsApp automation with Baileys - No Chromium required",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:gc": "node --expose-gc index.js",
+    "start:prod": "node --expose-gc --max-old-space-size=384 index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "automation",
+    "multi-account",
+    "supabase",
+    "webhooks",
+    "baileys"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.38.4",
+    "@whiskeysockets/baileys": "^6.7.16",
+    "axios": "^1.6.2",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "connect-pg-simple": "^10.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "express-session": "^1.17.3",
+    "fs-extra": "^11.1.1",
+    "helmet": "^7.1.0",
+    "joi": "^17.11.0",
+    "multer": "^2.0.0",
+    "pg": "^8.16.3",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.3",
+    "session-file-store": "^1.5.0",
+    "socket.io": "^4.7.4",
+    "uuid": "^9.0.1",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

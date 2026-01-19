@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - WhatsApp Multi-Automation V2</title>
+    <link rel="icon" type="image/png" href="/Generated Image November 22, 2025 - 6_10PM.png">
+    <link rel="apple-touch-icon" type="image/png" href="/Generated Image November 22, 2025 - 6_10PM.png">
+    <link rel="stylesheet" href="/css/dashboard.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+
+
+
+    <div class="dashboard-container">
+        <!-- Futuristic Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">
+                        <i class="fab fa-whatsapp"></i>
+                    </div>
+                    <h2>WA<span class="text-glow">Multi</span></h2>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-link active" data-view="dashboard">
+                    <span class="nav-icon"><i class="fas fa-dashboard"></i></span>
+                    <span class="nav-text">Dashboard</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#" class="nav-link" data-view="accounts">
+                    <span class="nav-icon"><i class="fas fa-users"></i></span>
+                    <span class="nav-text">Accounts</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#" class="nav-link" data-view="webhooks">
+                    <span class="nav-icon"><i class="fas fa-link"></i></span>
+                    <span class="nav-text">Webhooks</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#" class="nav-link" data-view="system">
+                    <span class="nav-icon"><i class="fas fa-server"></i></span>
+                    <span class="nav-text">System</span>
+                    <span class="nav-indicator"></span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="system-status">
+                    <div class="status-indicator"></div>
+                    <span>System Online</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="topbar">
+                <div class="topbar-left">
+                    <button class="btn-icon" id="menuToggle">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <h1 class="page-title">Dashboard</h1>
+                </div>
+
+                <div class="topbar-right">
+                    <div class="search-box">
+                        <i class="fas fa-search"></i>
+                        <input type="text" id="accountSearch" placeholder="Search accounts...">
+                        <button id="clearSearch" style="display: none; background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 5px;" title="Clear search">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+
+                    <button class="btn-icon" id="sendMessageBtn" title="Send Message">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+
+                    <button class="btn-icon notification-btn" id="notificationBtn">
+                        <i class="fas fa-bell"></i>
+                        <span class="notification-badge" id="notificationBadge">3</span>
+                    </button>
+
+                    <!-- Notification Dropdown -->
+                    <div class="notification-dropdown" id="notificationDropdown">
+                        <div class="notification-header">
+                            <span>Notifications</span>
+                            <button class="btn-text" id="markAllRead">Mark all read</button>
+                        </div>
+                        <div class="notification-list" id="notificationList">
+                            <!-- Notifications will be dynamically populated -->
+                        </div>
+                        <div class="notification-footer">
+                            <button class="btn-text" id="clearAllNotifications">Clear All</button>
+                        </div>
+                    </div>
+
+                    <button class="btn-icon" id="themeToggle" title="Toggle Dark Mode">
+                        <i class="fas fa-moon"></i>
+                    </button>
+
+                    <div class="user-menu">
+                        <div class="user-avatar">
+                            <i class="fas fa-user"></i>
+                        </div>
+                        <div class="user-info">
+                            <div class="user-name" id="userName">Admin</div>
+                            <div class="user-role">Administrator</div>
+                        </div>
+                        <button class="btn-neon" id="logoutBtn">
+                            <i class="fas fa-sign-out-alt"></i> Logout
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Alert Container -->
+            <div id="alertContainer"></div>
+
+            <!-- Content Area -->
+            <div class="content-wrapper" id="mainContent">
+                <!-- Stats Grid -->
+                <div class="stats-grid" id="statsGrid">
+                    <div class="stat-card cyber-card">
+                        <div class="stat-icon">
+                            <i class="fas fa-users"></i>
+                        </div>
+                        <div class="stat-details">
+                            <div class="stat-value" data-stat="totalAccounts">0</div>
+                            <div class="stat-label">Total Accounts</div>
+                        </div>
+                        <div class="stat-chart">
+                            <canvas id="chart1"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="stat-card cyber-card">
+                        <div class="stat-icon active">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                        <div class="stat-details">
+                            <div class="stat-value" data-stat="activeAccounts">0</div>
+                            <div class="stat-label">Active Accounts</div>
+                        </div>
+                        <div class="stat-chart">
+                            <canvas id="chart2"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Accounts Table -->
+                <div class="cyber-card table-card">
+                    <div class="card-header">
+                        <div>
+                            <h2 class="card-title">Connected Accounts</h2>
+                            <p class="card-subtitle">Manage your WhatsApp accounts</p>
+                        </div>
+                        <button class="btn-cyber" id="createAccountBtn">
+                            <span class="btn-content">
+                                <i class="fas fa-plus"></i> New Account
+                            </span>
+                        </button>
+                    </div>
+                    <div class="table-wrapper">
+                        <table class="cyber-table">
+                            <thead>
+                                <tr>
+                                    <th>Account</th>
+                                    <th>ID</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="accountsTableBody">
+                                <!-- Accounts will be populated here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- System View (Hidden by default) -->
+                <div id="systemView" style="display: none;">
+                    <div class="stats-grid">
+                        <div class="stat-card cyber-card">
+                            <div class="stat-icon">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                            <div class="stat-details">
+                                <div class="stat-value" id="sysUptime">-</div>
+                                <div class="stat-label">Uptime</div>
+                            </div>
+                        </div>
+                        <div class="stat-card cyber-card">
+                            <div class="stat-icon warning">
+                                <i class="fas fa-memory"></i>
+                            </div>
+                            <div class="stat-details">
+                                <div class="stat-value" id="sysMemory">-</div>
+                                <div class="stat-label">Memory Usage</div>
+                            </div>
+                        </div>
+                        <div class="stat-card cyber-card">
+                            <div class="stat-icon success">
+                                <i class="fas fa-database"></i>
+                            </div>
+                            <div class="stat-details">
+                                <div class="stat-value" id="sysDbStatus">-</div>
+                                <div class="stat-label">Database</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="cyber-card">
+                        <div class="card-header">
+                            <h2 class="card-title">System Logs</h2>
+                            <button class="btn-secondary" id="refreshLogsBtn"><i class="fas fa-sync-alt"></i> Refresh</button>
+                        </div>
+                        <div id="logTerminal" style="background: #0f172a; color: #f1f5f9; padding: 20px; font-family: monospace; height: 400px; overflow-y: auto; border-bottom-left-radius: 15px; border-bottom-right-radius: 15px;">
+                            <!-- Logs will appear here -->
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    
+    <!-- Create Account Modal -->
+    <div class="modal" id="createAccountModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>Connect New Account</h3>
+                <button class="btn-close"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="createAccountForm">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Account Name</label>
+                        <input type="text" class="cyber-input" id="accountName" placeholder="e.g. Support Line" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Description (Optional)</label>
+                        <textarea class="cyber-input" id="accountDescription" placeholder="Internal notes..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary modal-close">Cancel</button>
+                    <button type="submit" class="btn-cyber">Create Account</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div class="modal" id="qrModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>Scan QR Code</h3>
+                <button class="btn-close"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="text-center">
+                    <p style="margin-bottom: 20px;">Open WhatsApp > Linked Devices > Link a Device</p>
+                    <div id="qrCode"></div>
+                    <p style="margin-top: 15px; font-size: 12px; color: var(--text-secondary);">Account ID: <span id="qrAccountId"></span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Send Message Modal -->
+    <div class="modal" id="sendMessageModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>Send Message</h3>
+                <button class="btn-close"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="sendMessageForm">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>From Account</label>
+                        <div class="select-wrapper">
+                            <select class="cyber-input" id="messageAccountId" required>
+                                <option value="">Select Account</option>
+                            </select>
+                            <i class="fas fa-chevron-down select-icon"></i>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Recipient Number</label>
+                        <input type="text" class="cyber-input" id="messageRecipient" placeholder="e.g. +1234567890 or 1234567890@c.us" required>
+                        <span class="form-hint">Supports: +1234567890, 1234567890, 1234567890@c.us, or local numbers</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Message Type</label>
+                        <div class="message-type-selector">
+                            <label class="type-option">
+                                <input type="radio" name="messageType" value="text" checked>
+                                <span class="type-box"><i class="fas fa-comment-alt"></i> Text</span>
+                            </label>
+                            <label class="type-option">
+                                <input type="radio" name="messageType" value="media">
+                                <span class="type-box"><i class="fas fa-image"></i> Media</span>
+                            </label>
+                            <label class="type-option">
+                                <input type="radio" name="messageType" value="buttons">
+                                <span class="type-box" title="Converted to text format"><i class="fas fa-th-large"></i> Buttons*</span>
+                            </label>
+                            <label class="type-option">
+                                <input type="radio" name="messageType" value="poll">
+                                <span class="type-box"><i class="fas fa-poll"></i> Poll</span>
+                            </label>
+                        </div>
+                        <span class="form-hint" style="color: var(--warning);">* Buttons are converted to text format (WhatsApp Web limitation)</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label id="messageBodyLabel">Message</label>
+                        <textarea class="cyber-input" id="messageText" placeholder="Type your message..."></textarea>
+                    </div>
+                    
+                    <div id="mediaInputGroup" style="display: none;">
+                        <div class="form-group">
+                            <label>Select File</label>
+                            <input type="file" class="cyber-input" id="messageMedia">
+                        </div>
+                    </div>
+
+                    <div id="buttonInputs" style="display: none;">
+                        <div class="form-group">
+                            <label>Title (Optional)</label>
+                            <input type="text" class="cyber-input" id="buttonTitle" placeholder="Message Title">
+                        </div>
+                        <div class="form-group">
+                            <label>Footer (Optional)</label>
+                            <input type="text" class="cyber-input" id="buttonFooter" placeholder="Message Footer">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Buttons</label>
+                            <div id="buttonsList">
+                                <!-- Dynamic buttons will be added here -->
+                            </div>
+                            <button type="button" class="btn-secondary btn-sm" id="addBtnOption" style="margin-top: 10px; width: 100%;">
+                                <i class="fas fa-plus"></i> Add Button
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="pollInputs" style="display: none;">
+                        <div class="form-group">
+                            <label>Poll Question</label>
+                            <input type="text" class="cyber-input" id="pollQuestion" placeholder="What is your favorite color?">
+                        </div>
+                        <div class="form-group">
+                            <label>Allow Multiple Answers</label>
+                            <div class="select-wrapper">
+                                <select class="cyber-input" id="pollMultiSelect">
+                                    <option value="false">No - Single choice only</option>
+                                    <option value="true">Yes - Allow multiple selections</option>
+                                </select>
+                                <i class="fas fa-chevron-down select-icon"></i>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Poll Options</label>
+                            <div id="pollOptionsList">
+                                <!-- Dynamic poll options will be added here -->
+                            </div>
+                            <button type="button" class="btn-secondary btn-sm" id="addPollOption" style="margin-top: 10px; width: 100%;">
+                                <i class="fas fa-plus"></i> Add Option
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary modal-close">Cancel</button>
+                    <button type="submit" class="btn-cyber"><i class="fas fa-paper-plane"></i> Send</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Webhooks Modal -->
+    <div class="modal" id="webhooksModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-dialog large">
+            <div class="modal-header">
+                <h3>Webhooks</h3>
+                <button class="btn-close"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="webhookAccountId">
+                <div id="webhooksList"></div>
+                <button class="btn-cyber" id="addWebhookBtn" style="width: 100%; margin-top: 15px;">
+                    <i class="fas fa-plus"></i> Add Webhook
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Webhook Modal -->
+    <div class="modal" id="createWebhookModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>Add Webhook</h3>
+                <button class="btn-close"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="createWebhookForm">
+                <div class="modal-body">
+                    <input type="hidden" id="newWebhookAccountId">
+                    <div class="form-group">
+                        <label>Webhook URL <span class="required-indicator">*</span></label>
+                        <input type="url" class="cyber-input" id="webhookUrl" placeholder="https://your-n8n.com/webhook/xxx" required>
+                        <small style="color: var(--text-secondary); font-size: 11px;">The URL that will receive POST requests with message data</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Events <span class="required-indicator">*</span></label>
+                        <div class="checkbox-group" style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="eventMessage" value="message" checked>
+                                <span class="event-badge message" style="padding: 4px 10px;"><i class="fas fa-comment"></i> Messages</span>
+                                <span style="font-size: 11px; color: var(--text-secondary);">Incoming WhatsApp messages</span>
+                            </label>
+                            <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="eventMessageAck" value="message_ack">
+                                <span class="event-badge ack" style="padding: 4px 10px;"><i class="fas fa-check-double"></i> Receipts</span>
+                                <span style="font-size: 11px; color: var(--text-secondary);">Sent/Delivered/Read status updates</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Secret <span class="recommended-indicator">(Recommended)</span></label>
+                        <input type="text" class="cyber-input" id="webhookSecret" placeholder="Signing secret for HMAC verification">
+                        <small style="color: var(--text-secondary); font-size: 11px;">Used to sign payloads with HMAC-SHA256 for security verification</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="webhookActive" checked>
+                            <span>Active</span>
+                            <span style="font-size: 11px; color: var(--text-secondary);">Webhook will start receiving events immediately</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary modal-close">Cancel</button>
+                    <button type="submit" class="btn-cyber"><i class="fas fa-plus"></i> Add Webhook</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Chatbot Modal -->
+    <div class="modal" id="chatbotModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-dialog large">
+            <div class="modal-header">
+                <h3>AI Chatbot Configuration</h3>
+                <button class="btn-close"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="chatbotForm">
+                <div class="modal-body">
+                    <input type="hidden" id="chatbotAccountId">
+                    
+                    <div class="settings-grid">
+                        <div class="settings-column">
+                            <div class="section-title">
+                                <i class="fas fa-robot"></i> Model Settings
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Provider</label>
+                                <div class="select-wrapper">
+                                    <select class="cyber-input" id="chatbotProvider">
+                                        <option value="">Select Provider</option>
+                                        <option value="gemini">🏆 Google Gemini (1,500 RPD Free)</option>
+                                        <option value="groq">🚀 Groq (14,400 RPD Free - Fastest)</option>
+                                        <option value="mistral">⚖️ Mistral AI (60 RPM Free)</option>
+                                        <option value="sambanova">⚡ SambaNova (30 RPM Free)</option>
+                                        <option value="huggingface">🤗 Hugging Face (300 RPH Free)</option>
+                                        <option value="openrouter">🔀 OpenRouter (Aggregator)</option>
+                                    </select>
+                                    <i class="fas fa-chevron-down select-icon"></i>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Model</label>
+                                <div class="select-wrapper">
+                                    <select class="cyber-input" id="chatbotModel">
+                                        <!-- Populated by JS -->
+                                    </select>
+                                    <i class="fas fa-chevron-down select-icon"></i>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>API Key</label>
+                                <div class="input-group">
+                                    <input type="password" class="cyber-input" id="chatbotApiKey" placeholder="sk-...">
+                                    <button type="button" class="btn-icon-small" id="toggleApiKey">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-column">
+                            <div class="section-title">
+                                <i class="fas fa-sliders-h"></i> Behavior
+                            </div>
+
+                            <div class="form-group">
+                                <label>System Prompt</label>
+                                <textarea class="cyber-input" id="chatbotSystemPrompt" style="height: 120px;" placeholder="You are a helpful assistant..."></textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label>History Limit (Messages)</label>
+                                <input type="number" class="cyber-input" id="chatbotHistoryLimit" min="0" max="50" value="10" placeholder="e.g. 10">
+                                <small style="color: var(--text-secondary); font-size: 0.8em;">Number of past messages to include in context</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Temperature: <span id="temperatureValue" class="badge-value">0.7</span></label>
+                                <div class="range-wrapper">
+                                    <span class="range-label">Precise</span>
+                                    <input type="range" class="cyber-range" id="chatbotTemperature" min="0" max="2" step="0.1" value="0.7">
+                                    <span class="range-label">Creative</span>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <div class="toggle-wrapper">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="chatbotActive">
+                                        <span class="slider"></span>
+                                    </label>
+                                    <span class="toggle-label" id="chatbotStatusLabel">Disabled</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="test-section">
+                        <div class="test-header">
+                            <h4><i class="fas fa-vial"></i> Test Configuration</h4>
+                        </div>
+                        <div class="test-controls">
+                            <input type="text" class="cyber-input" id="testMessageInput" placeholder="Type a test message...">
+                            <button type="button" class="btn-secondary" id="testChatbotBtn">Test</button>
+                        </div>
+                        <div id="testResultContainer" style="display: none;">
+                            <div class="test-result">
+                                <div class="test-result-header">
+                                    <span class="badge success">Response</span>
+                                    <span class="latency-badge" id="testLatency"></span>
+                                </div>
+                                <div class="test-result-content" id="testResultText"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary modal-close">Cancel</button>
+                    <button type="submit" class="btn-cyber">Save Configuration</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/chart.umd.min.js"></script>
+    <script src="/js/dashboard.js"></script>
+</body>
+</html>
+   
