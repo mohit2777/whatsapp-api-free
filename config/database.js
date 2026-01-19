@@ -151,13 +151,25 @@ function isWebhookQueueMissingError(error) {
   return error?.code === 'PGRST205' && /webhook_delivery_queue/i.test(error?.message || '');
 }
 
+// Generate a random API key
+function generateApiKey() {
+  const crypto = require('crypto');
+  return 'wak_' + crypto.randomBytes(24).toString('hex'); // wak_ prefix + 48 hex chars = 52 total
+}
+
 const db = {
   // Account management
   async createAccount(accountData) {
     try {
+      // Generate API key for new account
+      const dataWithApiKey = {
+        ...accountData,
+        api_key: generateApiKey()
+      };
+
       const { data, error } = await supabase
         .from('accounts')
-        .insert([accountData])
+        .insert([dataWithApiKey])
         .select();
 
       if (error) {
@@ -236,6 +248,60 @@ const db = {
       logger.error(`Error fetching account ${id}:`, error);
       throw error;
     }
+  },
+
+  // Get account by API key (for API authentication)
+  async getAccountByApiKey(apiKey) {
+    if (!apiKey) return null;
+    
+    try {
+      const { data, error } = await supabase
+        .from('accounts')
+        .select('id, name, phone_number, status')
+        .eq('api_key', apiKey)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') return null; // No rows found
+        throw error;
+      }
+
+      return data;
+    } catch (error) {
+      logger.error('Error fetching account by API key:', error);
+      return null;
+    }
+  },
+
+  // Regenerate API key for an account
+  async regenerateApiKey(accountId) {
+    const newApiKey = generateApiKey();
+    
+    const { data, error } = await supabase
+      .from('accounts')
+      .update({ api_key: newApiKey, updated_at: new Date().toISOString() })
+      .eq('id', accountId)
+      .select('api_key');
+
+    if (error) throw error;
+    
+    // Invalidate caches
+    cacheManager.invalidate(`account_${accountId}`);
+    cacheManager.invalidatePattern('^accounts');
+    
+    return data[0]?.api_key;
+  },
+
+  // Get API key for an account (for dashboard display)
+  async getApiKey(accountId) {
+    const { data, error } = await supabase
+      .from('accounts')
+      .select('api_key')
+      .eq('id', accountId)
+      .single();
+
+    if (error) return null;
+    return data?.api_key;
   },
 
   async updateAccount(id, updates) {

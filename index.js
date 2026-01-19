@@ -881,13 +881,71 @@ app.delete('/api/accounts/:id/chatbot', requireAuth, apiLimiter, async (req, res
 });
 
 // ============================================================================
+// API KEY MANAGEMENT
+// ============================================================================
+
+// Get API key for an account
+app.get('/api/accounts/:id/api-key', requireAuth, apiLimiter, async (req, res) => {
+  try {
+    const apiKey = await db.getApiKey(req.params.id);
+    if (!apiKey) {
+      return res.status(404).json({ error: 'API key not found' });
+    }
+    res.json({ api_key: apiKey });
+  } catch (error) {
+    logger.error(`Error fetching API key for ${req.params.id}:`, error);
+    res.status(500).json({ error: 'Failed to get API key' });
+  }
+});
+
+// Regenerate API key for an account
+app.post('/api/accounts/:id/api-key/regenerate', requireAuth, apiLimiter, async (req, res) => {
+  try {
+    const newApiKey = await db.regenerateApiKey(req.params.id);
+    res.json({ api_key: newApiKey, message: 'API key regenerated successfully' });
+  } catch (error) {
+    logger.error(`Error regenerating API key for ${req.params.id}:`, error);
+    res.status(500).json({ error: 'Failed to regenerate API key' });
+  }
+});
+
+// ============================================================================
 // MESSAGING API
 // ============================================================================
 
-// Send text message
-app.post('/api/send', requireAuth, messageLimiter, validate(schemas.sendMessage), async (req, res) => {
+// API Key authentication middleware
+async function requireApiKey(req, res, next) {
+  // Check for API key in header or body
+  const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '') || req.body?.api_key;
+  
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key required. Pass via X-API-Key header or api_key in body.' });
+  }
+
   try {
-    const { account_id, number, message } = req.body;
+    const account = await db.getAccountByApiKey(apiKey);
+    if (!account) {
+      return res.status(401).json({ error: 'Invalid API key' });
+    }
+
+    // Attach account to request for use in endpoint
+    req.apiAccount = account;
+    next();
+  } catch (error) {
+    logger.error('API key auth error:', error);
+    res.status(500).json({ error: 'Authentication failed' });
+  }
+}
+
+// Send text message (API Key auth)
+app.post('/api/send', requireApiKey, messageLimiter, async (req, res) => {
+  try {
+    const { number, message } = req.body;
+    const account_id = req.apiAccount.id;
+
+    if (!number || !message) {
+      return res.status(400).json({ error: 'number and message are required' });
+    }
 
     const result = await whatsappManager.sendMessage(account_id, number, message);
 
@@ -901,14 +959,15 @@ app.post('/api/send', requireAuth, messageLimiter, validate(schemas.sendMessage)
   }
 });
 
-// Send media
-app.post('/api/send-media', requireAuth, messageLimiter, upload.single('media'), async (req, res) => {
+// Send media (API Key auth)
+app.post('/api/send-media', requireApiKey, messageLimiter, upload.single('media'), async (req, res) => {
   try {
-    const { account_id, number, caption } = req.body;
+    const { number, caption } = req.body;
+    const account_id = req.apiAccount.id;
     const file = req.file;
 
-    if (!account_id || !number) {
-      return res.status(400).json({ error: 'account_id and number are required' });
+    if (!number) {
+      return res.status(400).json({ error: 'number is required' });
     }
 
     if (!file) {

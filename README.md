@@ -112,8 +112,14 @@ npm start
 | DELETE | `/api/accounts/:id` | Delete account |
 | GET | `/api/accounts/:id/qr` | Get QR code |
 | POST | `/api/accounts/:id/reconnect` | Reconnect account |
+| GET | `/api/accounts/:id/api-key` | Get API key |
+| POST | `/api/accounts/:id/api-key/regenerate` | Regenerate API key |
 
-### Messages
+### Messages (API Key Auth)
+
+All messaging endpoints use **API Key authentication**. Pass the API key via:
+- Header: `X-API-Key: wak_xxxxxx`
+- Or Header: `Authorization: Bearer wak_xxxxxx`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -121,7 +127,7 @@ npm start
 | POST | `/api/send-media` | Send media (file upload) |
 | POST | `/api/send-buttons` | Send button message |
 | POST | `/api/send-list` | Send list message |
-| POST | `/api/webhook-reply` | Reply via webhook secret (for n8n) |
+| POST | `/api/webhook-reply` | Reply via webhook secret |
 
 ### Webhooks
 
@@ -134,7 +140,53 @@ npm start
 
 ---
 
-## Exact curl Commands
+## API Key Authentication
+
+Each WhatsApp account has a unique API key generated automatically. Find it in the dashboard under account settings.
+
+### Get Your API Key
+```bash
+# Via dashboard: Click on account → Settings → API Key
+# Or via API (requires login):
+curl -X GET http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/api-key \
+  -b cookies.txt
+```
+
+### Regenerate API Key
+```bash
+curl -X POST http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/api-key/regenerate \
+  -b cookies.txt
+```
+
+---
+
+## Sending Messages
+
+### Send Text Message
+```bash
+curl -X POST http://localhost:3000/api/send \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: wak_your_api_key_here" \
+  -d '{
+    "number": "919876543210",
+    "message": "Hello from API!"
+  }'
+```
+
+### Send Media (File Upload)
+```bash
+curl -X POST http://localhost:3000/api/send-media \
+  -H "X-API-Key: wak_your_api_key_here" \
+  -F "number=919876543210" \
+  -F "caption=Check this image!" \
+  -F "media=@/path/to/image.jpg"
+```
+
+---
+
+## Dashboard Login
+
+The dashboard requires login with username/password (set via environment variables).
 
 ### Login (get session cookie)
 ```bash
@@ -164,27 +216,9 @@ curl -X GET http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/qr \
   -b cookies.txt
 ```
 
-### Send Text Message
-```bash
-curl -X POST http://localhost:3000/api/send \
-  -H "Content-Type: application/json" \
-  -b cookies.txt \
-  -d '{
-    "account_id": "YOUR_ACCOUNT_ID",
-    "number": "919876543210",
-    "message": "Hello from API!"
-  }'
-```
+---
 
-### Send Media (File Upload)
-```bash
-curl -X POST http://localhost:3000/api/send-media \
-  -b cookies.txt \
-  -F "account_id=YOUR_ACCOUNT_ID" \
-  -F "number=919876543210" \
-  -F "caption=Check this image!" \
-  -F "media=@/path/to/image.jpg"
-```
+## Webhooks
 
 ### Create Webhook (Messages Only)
 ```bash
@@ -249,16 +283,41 @@ curl -X POST http://localhost:3000/api/accounts/YOUR_ACCOUNT_ID/reconnect \
 
 ### Authentication Options
 
-You have two ways to authenticate API requests:
+You have two ways to send messages from n8n:
 
-1. **Session Cookie** - Login and use cookie (good for testing)
-2. **Webhook Secret** - Use `/api/webhook-reply` with the webhook secret (recommended for n8n)
+1. **API Key** - Simple header authentication (recommended)
+2. **Webhook Secret** - Use `/api/webhook-reply` with webhook secret
 
 ---
 
-### Option 1: Reply via Webhook Secret (Recommended for n8n)
+### Option 1: Send via API Key (Recommended)
 
-When you create a webhook, a `secret` is automatically generated. Use this to reply to messages without needing a session cookie.
+Use the account's API key to send messages directly.
+
+**Method:** `POST`  
+**URL:** `https://your-server.com/api/send`
+
+**Headers:**
+```json
+{
+  "Content-Type": "application/json",
+  "X-API-Key": "wak_your_api_key_here"
+}
+```
+
+**Body (JSON):**
+```json
+{
+  "number": "{{$json.phoneNumber}}",
+  "message": "{{$json.message}}"
+}
+```
+
+---
+
+### Option 2: Reply via Webhook Secret
+
+When you create a webhook, a `secret` is automatically generated. Use this to reply to incoming messages.
 
 **Method:** `POST`  
 **URL:** `https://your-server.com/api/webhook-reply`
@@ -304,34 +363,6 @@ When you create a webhook, a `secret` is automatically generated. Use this to re
   "message": "Please select an option:",
   "buttons": ["Option 1", "Option 2", "Option 3"],
   "footer": "Powered by WhatsApp API"
-}
-```
-
----
-
-### Option 2: Send Message with Session Cookie
-
-**Method:** `POST`  
-**URL:** `https://your-server.com/api/send`
-
-**Authentication:** Header Auth
-```
-Cookie: connect.sid={{$credentials.sessionCookie}}
-```
-
-**Headers:**
-```json
-{
-  "Content-Type": "application/json"
-}
-```
-
-**Body (JSON):**
-```json
-{
-  "account_id": "{{$json.accountId}}",
-  "number": "{{$json.phoneNumber}}",
-  "message": "{{$json.message}}"
 }
 ```
 
@@ -453,12 +484,12 @@ POST /api/webhooks
 ## n8n Workflow Example
 
 ```
-[Webhook Trigger] → [Switch by message] → [HTTP Request: webhook-reply]
+[Webhook Trigger] → [Switch by message] → [HTTP Request: /api/send]
 ```
 
 1. **Webhook Trigger**: Receives incoming WhatsApp message
 2. **Switch Node**: Route based on `{{$json.message}}` content
-3. **HTTP Request**: Reply via `/api/webhook-reply` using webhook secret
+3. **HTTP Request**: Reply via `/api/send` using API key
 
 ### Complete n8n Workflow JSON
 
@@ -478,11 +509,12 @@ POST /api/webhooks
       "type": "n8n-nodes-base.httpRequest",
       "parameters": {
         "method": "POST",
-        "url": "https://your-server.com/api/webhook-reply",
+        "url": "https://your-server.com/api/send",
+        "headers": {
+          "X-API-Key": "wak_your_api_key_here"
+        },
         "jsonBody": {
-          "account_id": "={{$json.account_id}}",
           "number": "={{$json.sender.replace('@s.whatsapp.net', '')}}",
-          "webhook_secret": "YOUR_WEBHOOK_SECRET",
           "message": "Thanks for your message! We received: {{$json.message}}"
         }
       }

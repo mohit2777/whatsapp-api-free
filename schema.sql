@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS whatsapp_accounts (
     description TEXT,
     status VARCHAR(50) DEFAULT 'initializing' CHECK (status IN ('initializing', 'qr_ready', 'ready', 'disconnected', 'auth_failed', 'error')),
     phone_number VARCHAR(50),
+    api_key VARCHAR(64) UNIQUE, -- API key for sending messages without login
     session_data TEXT, -- Base64 encoded WhatsApp Web session data (~12MB)
     last_session_saved TIMESTAMP WITH TIME ZONE,
     qr_code TEXT,
@@ -29,8 +30,11 @@ CREATE TABLE IF NOT EXISTS whatsapp_accounts (
     last_active_at TIMESTAMP WITH TIME ZONE
 );
 
+CREATE INDEX IF NOT EXISTS idx_accounts_api_key ON whatsapp_accounts(api_key);
+
 COMMENT ON TABLE whatsapp_accounts IS 'Stores WhatsApp account information and session data';
 COMMENT ON COLUMN whatsapp_accounts.session_data IS 'Base64 encoded WhatsApp Web session data for persistent authentication';
+COMMENT ON COLUMN whatsapp_accounts.api_key IS 'API key for authenticating message sending without login';
 
 -- Webhooks Table
 CREATE TABLE IF NOT EXISTS webhooks (
