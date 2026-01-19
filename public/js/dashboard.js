@@ -398,6 +398,9 @@ function setupEventListeners() {
                 case 'reconnect':
                     reconnectAccount(accountId);
                     break;
+                case 'api-key':
+                    showApiKeyModal(accountId);
+                    break;
                 case 'webhooks':
                     openWebhookModal(accountId);
                     break;
@@ -653,6 +656,9 @@ function renderAccountsTable() {
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     ` : ''}
+                    <button class="btn-action" data-action="api-key" data-account-id="${account.id || account.account_id}" title="API Key">
+                        <i class="fas fa-key"></i>
+                    </button>
                     <button class="btn-action" data-action="webhooks" data-account-id="${account.id || account.account_id}" title="Manage Webhooks">
                         <i class="fas fa-plug"></i>
                     </button>
@@ -756,6 +762,9 @@ function filterAccounts(searchTerm) {
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     ` : ''}
+                    <button class="btn-action" data-action="api-key" data-account-id="${account.id || account.account_id}" title="API Key">
+                        <i class="fas fa-key"></i>
+                    </button>
                     <button class="btn-action" data-action="webhooks" data-account-id="${account.id || account.account_id}" title="Manage Webhooks">
                         <i class="fas fa-plug"></i>
                     </button>
@@ -1017,6 +1026,135 @@ async function reconnectAccount(accountId) {
             btn.disabled = false;
             btn.innerHTML = originalContent;
         }
+    }
+}
+
+// Show API Key Modal
+async function showApiKeyModal(accountId) {
+    const account = accounts.find(a => a.id === accountId || a.account_id === accountId);
+    const accountName = account?.name || 'Account';
+    
+    // Create modal HTML
+    const modalHtml = `
+        <div class="modal-overlay" id="apiKeyModal" onclick="if(event.target === this) closeModal('apiKeyModal')">
+            <div class="modal" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-key"></i> API Key - ${accountName}</h3>
+                    <button class="modal-close" onclick="closeModal('apiKeyModal')">&times;</button>
+                </div>
+                <div class="modal-body" style="padding: 20px;">
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 8px; font-weight: 600;">Account ID</label>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="apiKeyAccountId" value="${accountId}" readonly 
+                                style="flex: 1; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-family: monospace; font-size: 12px;">
+                            <button class="btn btn-secondary" onclick="copyToClipboard('${accountId}', 'Account ID')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 8px; font-weight: 600;">API Key</label>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="apiKeyValue" value="Loading..." readonly 
+                                style="flex: 1; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-family: monospace; font-size: 12px;">
+                            <button class="btn btn-secondary" onclick="copyApiKey()">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px;"><i class="fas fa-code"></i> Example Usage</h4>
+                        <pre style="margin: 0; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">curl -X POST https://your-server.com/api/send \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: <span id="apiKeyExample">YOUR_API_KEY</span>" \\
+  -d '{"account_id": "${accountId}", "number": "919876543210", "message": "Hello!"}'</pre>
+                    </div>
+                    <div style="display: flex; gap: 10px; justify-content: space-between;">
+                        <button class="btn btn-danger" onclick="regenerateApiKey('${accountId}')" id="regenerateApiKeyBtn">
+                            <i class="fas fa-sync-alt"></i> Regenerate Key
+                        </button>
+                        <button class="btn btn-secondary" onclick="closeModal('apiKeyModal')">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Remove existing modal if any
+    const existing = document.getElementById('apiKeyModal');
+    if (existing) existing.remove();
+    
+    // Add modal to body
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    
+    // Fetch API key
+    try {
+        const response = await fetch(`/api/accounts/${accountId}/api-key`, {
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to fetch API key');
+        }
+        
+        const data = await response.json();
+        document.getElementById('apiKeyValue').value = data.api_key || 'No API key found';
+        document.getElementById('apiKeyExample').textContent = data.api_key || 'YOUR_API_KEY';
+    } catch (error) {
+        console.error('Error fetching API key:', error);
+        document.getElementById('apiKeyValue').value = 'Error loading API key';
+    }
+}
+
+// Copy API Key to clipboard
+function copyApiKey() {
+    const apiKey = document.getElementById('apiKeyValue').value;
+    if (apiKey && apiKey !== 'Loading...' && apiKey !== 'Error loading API key') {
+        copyToClipboard(apiKey, 'API Key');
+    }
+}
+
+// Copy to clipboard helper
+function copyToClipboard(text, label) {
+    navigator.clipboard.writeText(text).then(() => {
+        showAlert(`${label} copied to clipboard!`, 'success');
+    }).catch(() => {
+        showAlert('Failed to copy', 'error');
+    });
+}
+
+// Regenerate API Key
+async function regenerateApiKey(accountId) {
+    if (!confirm('Are you sure you want to regenerate the API key? The old key will stop working immediately.')) {
+        return;
+    }
+    
+    const btn = document.getElementById('regenerateApiKeyBtn');
+    const originalContent = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Regenerating...';
+    
+    try {
+        const response = await fetch(`/api/accounts/${accountId}/api-key/regenerate`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to regenerate API key');
+        }
+        
+        const data = await response.json();
+        document.getElementById('apiKeyValue').value = data.api_key;
+        document.getElementById('apiKeyExample').textContent = data.api_key;
+        showAlert('API key regenerated successfully!', 'success');
+    } catch (error) {
+        console.error('Error regenerating API key:', error);
+        showAlert('Failed to regenerate API key', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalContent;
     }
 }
 

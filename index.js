@@ -917,15 +917,25 @@ app.post('/api/accounts/:id/api-key/regenerate', requireAuth, apiLimiter, async 
 async function requireApiKey(req, res, next) {
   // Check for API key in header or body
   const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '') || req.body?.api_key;
+  const accountId = req.body?.account_id || req.headers['x-account-id'];
   
   if (!apiKey) {
     return res.status(401).json({ error: 'API key required. Pass via X-API-Key header or api_key in body.' });
+  }
+
+  if (!accountId) {
+    return res.status(400).json({ error: 'account_id is required in request body or X-Account-Id header.' });
   }
 
   try {
     const account = await db.getAccountByApiKey(apiKey);
     if (!account) {
       return res.status(401).json({ error: 'Invalid API key' });
+    }
+
+    // Verify the API key belongs to the specified account
+    if (account.id !== accountId) {
+      return res.status(403).json({ error: 'API key does not match the specified account_id' });
     }
 
     // Attach account to request for use in endpoint

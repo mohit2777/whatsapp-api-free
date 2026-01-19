@@ -168,6 +168,7 @@ curl -X POST http://localhost:3000/api/send \
   -H "Content-Type: application/json" \
   -H "X-API-Key: wak_your_api_key_here" \
   -d '{
+    "account_id": "YOUR_ACCOUNT_ID",
     "number": "919876543210",
     "message": "Hello from API!"
   }'
@@ -177,10 +178,13 @@ curl -X POST http://localhost:3000/api/send \
 ```bash
 curl -X POST http://localhost:3000/api/send-media \
   -H "X-API-Key: wak_your_api_key_here" \
+  -F "account_id=YOUR_ACCOUNT_ID" \
   -F "number=919876543210" \
   -F "caption=Check this image!" \
   -F "media=@/path/to/image.jpg"
 ```
+
+> **Note:** Both `account_id` AND `X-API-Key` are required. The API key must belong to the specified account.
 
 ---
 
@@ -308,10 +312,13 @@ Use the account's API key to send messages directly.
 **Body (JSON):**
 ```json
 {
+  "account_id": "YOUR_ACCOUNT_ID",
   "number": "{{$json.phoneNumber}}",
   "message": "{{$json.message}}"
 }
 ```
+
+> **Important:** Both `account_id` AND `X-API-Key` are required. The API key must belong to the specified account.
 
 ---
 
