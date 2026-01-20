@@ -390,92 +390,179 @@ async function saveAuthToDatabase(accountId, sessionPath, force = false) {
 }
 
 // ============================================================================
-// AUTH SAVE GATING - Prevent saves during cryptographic operations
+// ATOMIC KEY STORE - Evolution API Pattern
 // ============================================================================
-// Signal sessions are destroyed when auth is saved mid-ratchet
-// These gates prevent that catastrophic failure
+// 
+// THE PROBLEM: Saving auth DURING message encryption corrupts Signal sessions.
+// creds.update fires DURING encryption, so any save triggered by it is dangerous.
+//
+// THE SOLUTION (Evolution API pattern):
+// 1. Separate CREDS storage from KEYS storage
+// 2. KEYS are saved IMMEDIATELY and ATOMICALLY when Baileys calls keys.set()
+// 3. CREDS are saved ONLY after connection.open and on graceful shutdown
+// 4. NEVER save the full auth blob during crypto operations
+//
+// This works because:
+// - Signal keys must persist immediately to maintain ratchet consistency
+// - Creds (identity, registration) rarely change after initial auth
+// - makeCacheableSignalKeyStore adds in-memory buffering for reads
+//
 // ============================================================================
-const authSaveGates = new Map(); // accountId -> { ready: bool, sending: number, historySync: bool }
 
-function getAuthGate(accountId) {
-  if (!authSaveGates.has(accountId)) {
-    authSaveGates.set(accountId, { ready: false, sending: 0, historySync: false });
-  }
-  return authSaveGates.get(accountId);
-}
+// Track connection state for safe creds saving
+const connectionReady = new Map(); // accountId -> boolean
 
-function canSaveAuth(accountId) {
-  const gate = getAuthGate(accountId);
-  // Only save when: connection is open AND no messages in flight AND no history sync
-  return gate.ready && gate.sending === 0 && !gate.historySync;
+/**
+ * Create ATOMIC key store that saves keys immediately to separate files
+ * This prevents the "bulk blob save during crypto" problem
+ */
+function createAtomicKeyStore(accountId, sessionPath) {
+  const keyCache = new Map(); // In-memory cache for fast reads
+  
+  // Load existing keys into cache on startup
+  const loadKeysToCache = () => {
+    try {
+      const files = fs.readdirSync(sessionPath);
+      for (const file of files) {
+        if (file !== 'creds.json' && file.endsWith('.json')) {
+          try {
+            const data = JSON.parse(fs.readFileSync(path.join(sessionPath, file), 'utf-8'));
+            keyCache.set(file.replace('.json', ''), data);
+          } catch {}
+        }
+      }
+    } catch {}
+  };
+  
+  loadKeysToCache();
+  
+  return {
+    get: async (type, ids) => {
+      const data = {};
+      for (const id of ids) {
+        const key = `${type}-${id}`;
+        // Check memory cache first
+        if (keyCache.has(key)) {
+          data[id] = keyCache.get(key);
+        } else {
+          // Fall back to file
+          const filePath = path.join(sessionPath, `${key}.json`);
+          if (fs.existsSync(filePath)) {
+            try {
+              const value = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              keyCache.set(key, value); // Cache for next time
+              data[id] = value;
+            } catch {}
+          }
+        }
+      }
+      return data;
+    },
+    
+    set: async (data) => {
+      // ATOMIC: Save each key immediately to its own file
+      // This is the critical difference from bulk blob saves
+      for (const category in data) {
+        for (const id in data[category]) {
+          const key = `${category}-${id}`;
+          const value = data[category][id];
+          const filePath = path.join(sessionPath, `${key}.json`);
+          
+          if (value) {
+            // Update cache AND file atomically
+            keyCache.set(key, value);
+            try {
+              fs.writeFileSync(filePath, JSON.stringify(value));
+            } catch (e) {
+              logger.warn(`[AtomicKeys] Failed to save ${key}: ${e.message}`);
+            }
+          } else {
+            // Delete key
+            keyCache.delete(key);
+            try {
+              if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            } catch {}
+          }
+        }
+      }
+      
+      // IMPORTANT: Do NOT trigger bulk auth save here
+      // Keys are already persisted individually
+    }
+  };
 }
 
 /**
- * Create auth state wrapper with GATED saves
- * CRITICAL: Never save during cryptographic mutations (message send, history sync, ratchet)
+ * Create auth state with ATOMIC key storage
+ * Keys save immediately, creds save only when safe
  */
 async function useDBAuthState(accountId) {
   const sessionPath = path.join('./wa-sessions-temp', accountId);
+  
+  // Ensure directory exists
+  if (!fs.existsSync(sessionPath)) {
+    fs.mkdirSync(sessionPath, { recursive: true });
+  }
 
-  // Use Baileys' built-in file auth state
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+  // Load creds from file
+  const credsPath = path.join(sessionPath, 'creds.json');
+  let creds;
+  if (fs.existsSync(credsPath)) {
+    try {
+      creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+    } catch {
+      creds = null;
+    }
+  }
+  
+  // Initialize creds if not present
+  if (!creds) {
+    const { initAuthCreds } = require('@whiskeysockets/baileys');
+    creds = initAuthCreds();
+    fs.writeFileSync(credsPath, JSON.stringify(creds, null, 2));
+  }
 
-  // Debounce configuration
-  let saveTimeout = null;
-  let lastSaveTime = 0;
-  const SAVE_DEBOUNCE_MS = 3000; // Wait 3s for activity to settle
-  const MIN_SAVE_INTERVAL_MS = 5000; // Min 5s between saves
+  // Create atomic key store (saves keys immediately, individually)
+  const keys = createAtomicKeyStore(accountId, sessionPath);
 
-  // Debounced save function - ONLY executes when gates allow
+  const state = { creds, keys };
+
+  // Track last creds save to database
+  let lastDbSave = 0;
+  const MIN_DB_SAVE_INTERVAL = 10000; // 10 seconds between DB saves
+
+  // Save creds to local file (always safe - just updates creds.json)
+  const saveCreds = async () => {
+    try {
+      fs.writeFileSync(credsPath, JSON.stringify(state.creds, null, 2));
+    } catch (e) {
+      logger.warn(`[Auth] Failed to save creds locally: ${e.message}`);
+    }
+  };
+
+  // Save full auth to database (ONLY when connection is stable)
   const saveAllToDatabase = async (force = false) => {
-    // Force save bypasses gates (used on connection.open stabilization)
-    if (force) {
-      if (saveTimeout) clearTimeout(saveTimeout);
-      saveTimeout = null;
-      await saveAuthToDatabase(accountId, sessionPath, true);
-      lastSaveTime = Date.now();
-      logger.debug(`[Auth] Forced save for ${accountId}`);
-      return;
+    const isReady = connectionReady.get(accountId);
+    const now = Date.now();
+    
+    // Only save if:
+    // 1. Force flag is true (stabilization save, shutdown)
+    // 2. OR connection is ready AND enough time has passed
+    if (!force && (!isReady || now - lastDbSave < MIN_DB_SAVE_INTERVAL)) {
+      return false;
     }
 
-    // Check gates before scheduling
-    if (!canSaveAuth(accountId)) {
-      logger.debug(`[Auth] Save blocked for ${accountId} - crypto operation in progress`);
-      return;
-    }
-
-    // Debounce
-    if (saveTimeout) clearTimeout(saveTimeout);
-    
-    saveTimeout = setTimeout(async () => {
-      // Re-check gates at execution time
-      if (!canSaveAuth(accountId)) {
-        logger.debug(`[Auth] Debounced save aborted for ${accountId} - crypto operation started`);
-        return;
-      }
-      
-      const now = Date.now();
-      if (now - lastSaveTime >= MIN_SAVE_INTERVAL_MS) {
-        await saveAuthToDatabase(accountId, sessionPath, false);
-        lastSaveTime = now;
-      }
-    }, SAVE_DEBOUNCE_MS);
-  };
-
-  // Wrap saveCreds - GATED to prevent mid-ratchet saves
-  const saveCredsAndDB = async () => {
-    // Always save to local files (Baileys needs this)
-    await saveCreds();
-    
-    // Only trigger DB save if gates allow
-    if (canSaveAuth(accountId)) {
-      await saveAllToDatabase();
-    } else {
-      logger.debug(`[Auth] Creds saved locally but DB save blocked for ${accountId}`);
+    try {
+      await saveAuthToDatabase(accountId, sessionPath, force);
+      lastDbSave = now;
+      return true;
+    } catch (e) {
+      logger.error(`[Auth] DB save failed: ${e.message}`);
+      return false;
     }
   };
 
-  return { state, saveCreds: saveCredsAndDB, saveAllToDatabase };
+  return { state, saveCreds, saveAllToDatabase };
 }
 
 // ============================================================================
@@ -865,11 +952,10 @@ class WhatsAppManager {
         qrInProgress.delete(accountId);
 
         // =====================================================================
-        // OPEN AUTH SAVE GATE - Now safe to save auth to database
+        // MARK CONNECTION READY - Now safe to save auth to database
         // =====================================================================
-        const gate = getAuthGate(accountId);
-        gate.ready = true;
-        logger.debug(`[Auth] Save gate OPENED for ${accountId}`);
+        connectionReady.set(accountId, true);
+        logger.debug(`[Auth] Connection marked READY for ${accountId}`);
 
         // =====================================================================
         // STABILIZATION SAVE - Mandatory first save after connection.open
@@ -1055,22 +1141,17 @@ class WhatsAppManager {
       }
     });
 
-    // Credentials updated - save to database (GATED - won't save during crypto)
+    // Credentials updated - save to LOCAL file only (atomic keys already persisted)
+    // CRITICAL: This ONLY updates creds.json, NOT the database
+    // Database sync happens on connection.open stabilization and periodic saves
     sock.ev.on('creds.update', saveCreds);
 
-    // History sync - GATE saves during sync burst
+    // History sync - log only, no special handling needed
+    // Keys are saved atomically as they're created
     sock.ev.on('messaging-history.set', async () => {
-      const gate = getAuthGate(accountId);
-      gate.historySync = true;
-      logger.debug(`[Auth] History sync started for ${accountId} - saves blocked`);
-      
-      // Wait for history sync burst to settle, then unblock
-      // creds.update will trigger the actual save when ready
-      setTimeout(() => {
-        gate.historySync = false;
-        logger.debug(`[Auth] History sync complete for ${accountId} - saves unblocked`);
-        // Note: Don't trigger explicit save here - creds.update handles it
-      }, 5000); // 5s for history sync burst to complete
+      logger.debug(`[Auth] History sync received for ${accountId}`);
+      // Note: Keys are already saved atomically by createAtomicKeyStore
+      // No need to gate or trigger saves here
     });
     
     // Contacts update - capture LID to phone number mappings
@@ -1365,13 +1446,6 @@ class WhatsAppManager {
     if (status !== 'ready') throw new Error(`Client not ready: ${status}`);
 
     const jid = this.formatPhoneNumber(number);
-    
-    // =========================================================================
-    // GATE AUTH SAVES - Block DB writes during encryption
-    // =========================================================================
-    const gate = getAuthGate(accountId);
-    gate.sending++;
-    logger.debug(`[Auth] Send gate LOCKED for ${accountId} (sending: ${gate.sending})`);
 
     try {
       // Anti-ban: Wait for rate limit with jitter
@@ -1433,14 +1507,8 @@ class WhatsAppManager {
     } catch (error) {
       this.metrics.messagesFailed++;
       throw error;
-    } finally {
-      // =========================================================================
-      // UNLOCK GATE - Allow auth saves again after encryption complete
-      // =========================================================================
-      gate.sending = Math.max(0, gate.sending - 1);
-      logger.debug(`[Auth] Send gate UNLOCKED for ${accountId} (sending: ${gate.sending})`);
-      // Note: Don't trigger explicit save here - creds.update will fire if keys changed
     }
+    // Note: No gating needed - keys are saved atomically by createAtomicKeyStore
   }
 
   async sendMedia(accountId, number, media, caption = '', options = {}) {
@@ -1449,13 +1517,6 @@ class WhatsAppManager {
 
     const status = this.accountStatus.get(accountId);
     if (status !== 'ready') throw new Error(`Client not ready: ${status}`);
-
-    // =========================================================================
-    // GATE AUTH SAVES - Block DB writes during encryption
-    // =========================================================================
-    const gate = getAuthGate(accountId);
-    gate.sending++;
-    logger.debug(`[Auth] Send gate LOCKED for ${accountId} (sending: ${gate.sending})`);
 
     try {
       let base64Data = media.data || '';
@@ -1542,14 +1603,11 @@ class WhatsAppManager {
         messageId: result.key?.id,
         timestamp: Math.floor(Date.now() / 1000)
       };
-    } finally {
-      // =========================================================================
-      // UNLOCK GATE - Allow auth saves again after encryption complete
-      // =========================================================================
-      gate.sending = Math.max(0, gate.sending - 1);
-      logger.debug(`[Auth] Send gate UNLOCKED for ${accountId} (sending: ${gate.sending})`);
-      // Note: Don't trigger explicit save here - creds.update will fire if keys changed
+    } catch (error) {
+      this.metrics.messagesFailed++;
+      throw error;
     }
+    // Note: No gating needed - keys are saved atomically by createAtomicKeyStore
   }
 
   /**
@@ -1791,7 +1849,7 @@ class WhatsAppManager {
       // Mark as deleted FIRST to prevent QR regeneration/reconnection
       this.deletedAccounts.add(accountId);
       qrInProgress.delete(accountId); // Clear QR tracking
-      authSaveGates.delete(accountId); // Clear auth gates
+      connectionReady.delete(accountId); // Clear connection state
       logger.info(`Marking account ${accountId} as deleted - stopping all activity`);
 
       await this.safeDisposeClient(accountId);
