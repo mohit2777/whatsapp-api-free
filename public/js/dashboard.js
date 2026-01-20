@@ -143,7 +143,8 @@ function setupEventListeners() {
                 'dashboard': 'Dashboard',
                 'accounts': 'Accounts',
                 'webhooks': 'Webhooks',
-                'system': 'System'
+                'system': 'System',
+                'api-docs': 'API Documentation'
             };
             if (pageTitle) {
                 pageTitle.textContent = viewTitles[view] || 'Dashboard';
@@ -157,6 +158,12 @@ function setupEventListeners() {
             // For webhooks, we replace the entire content
             if (view === 'webhooks') {
                 showWebhooksView();
+                return;
+            }
+            
+            // For API docs, we replace the entire content
+            if (view === 'api-docs') {
+                showApiDocsView();
                 return;
             }
             
@@ -1800,6 +1807,406 @@ function showWebhooksView() {
     mainContent.innerHTML = '<div class="cyber-card"><div class="card-header"><h2 class="card-title">Webhooks Management</h2><p class="card-subtitle">Manage webhooks for all accounts</p></div><div style="padding: 20px;"><div id="allWebhooksContainer"><div style="text-align: center; padding: 40px; color: var(--text-secondary);"><i class="fas fa-spinner fa-spin" style="font-size: 32px;"></i><p style="margin-top: 15px;">Loading webhooks...</p></div></div></div></div>';
     loadAllWebhooks();
 }
+
+// API Documentation View
+function showApiDocsView() {
+    const mainContent = document.getElementById('mainContent');
+    const baseUrl = window.location.origin;
+    
+    mainContent.innerHTML = `
+        <div class="api-docs-container" style="display: grid; grid-template-columns: 1fr 350px; gap: 20px; max-width: 1400px;">
+            <!-- Left: API Documentation -->
+            <div class="api-docs-content">
+                <div class="cyber-card" style="margin-bottom: 20px;">
+                    <div class="card-header">
+                        <div>
+                            <h2 class="card-title"><i class="fas fa-key" style="color: var(--primary); margin-right: 10px;"></i>Authentication</h2>
+                            <p class="card-subtitle">All API requests require authentication via API Key</p>
+                        </div>
+                    </div>
+                    <div style="padding: 20px;">
+                        <div style="background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+                            <p style="color: var(--text-primary); margin: 0 0 10px 0;"><strong>Header Authentication:</strong></p>
+                            <code style="color: var(--primary); font-size: 13px;">X-API-Key: wak_your_api_key_here</code>
+                        </div>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin: 0;">
+                            <i class="fas fa-info-circle" style="margin-right: 5px;"></i>
+                            Get your API key from the <strong>🔑</strong> button in the Accounts section.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Send Text Message -->
+                <div class="cyber-card api-endpoint" style="margin-bottom: 20px;">
+                    <div class="card-header" style="cursor: pointer;" onclick="toggleApiEndpoint(this)">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <span style="background: var(--primary); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">POST</span>
+                            <div>
+                                <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">/api/send</h3>
+                                <p style="margin: 5px 0 0 0; font-size: 12px; color: var(--text-secondary);">Send a text message</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-down" style="color: var(--text-secondary); transition: transform 0.3s;"></i>
+                    </div>
+                    <div class="endpoint-content" style="padding: 20px; display: none;">
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">Request Body</h4>
+                            <div style="background: var(--bg-dark); border-radius: 8px; padding: 15px; border: 1px solid var(--border-color);">
+                                <pre style="margin: 0; color: var(--text-secondary); font-size: 12px; overflow-x: auto;">{
+  "number": "919876543210",
+  "message": "Hello from WhatsApp API!"
+}</pre>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">cURL Example</h4>
+                            <div style="background: #1a1a2e; border-radius: 8px; padding: 15px; position: relative; border: 1px solid var(--border-color);">
+                                <button onclick="copyCode(this)" style="position: absolute; top: 10px; right: 10px; background: var(--primary); border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                                <pre style="margin: 0; color: #e0e0e0; font-size: 11px; overflow-x: auto; white-space: pre-wrap;">curl -X POST ${baseUrl}/api/send \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: wak_your_api_key" \\
+  -d '{"number": "919876543210", "message": "Hello from WhatsApp API!"}'</pre>
+                            </div>
+                        </div>
+                        <button class="btn-preview" onclick="previewMessage('text', 'Hello from WhatsApp API!')" style="background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 13px;">
+                            <i class="fas fa-eye"></i> Preview in Chat
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Send Media -->
+                <div class="cyber-card api-endpoint" style="margin-bottom: 20px;">
+                    <div class="card-header" style="cursor: pointer;" onclick="toggleApiEndpoint(this)">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <span style="background: var(--primary); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">POST</span>
+                            <div>
+                                <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">/api/send-media</h3>
+                                <p style="margin: 5px 0 0 0; font-size: 12px; color: var(--text-secondary);">Send image, video, document, or audio</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-down" style="color: var(--text-secondary); transition: transform 0.3s;"></i>
+                    </div>
+                    <div class="endpoint-content" style="padding: 20px; display: none;">
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">Form Data Parameters</h4>
+                            <div style="background: var(--bg-dark); border-radius: 8px; padding: 15px; border: 1px solid var(--border-color);">
+                                <table style="width: 100%; font-size: 12px; color: var(--text-secondary);">
+                                    <tr><td style="padding: 5px 0;"><code style="color: var(--primary);">number</code></td><td>Phone number with country code</td></tr>
+                                    <tr><td style="padding: 5px 0;"><code style="color: var(--primary);">media</code></td><td>File upload (image/video/audio/document)</td></tr>
+                                    <tr><td style="padding: 5px 0;"><code style="color: var(--primary);">caption</code></td><td>Optional caption for the media</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">cURL Example</h4>
+                            <div style="background: #1a1a2e; border-radius: 8px; padding: 15px; position: relative; border: 1px solid var(--border-color);">
+                                <button onclick="copyCode(this)" style="position: absolute; top: 10px; right: 10px; background: var(--primary); border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                                <pre style="margin: 0; color: #e0e0e0; font-size: 11px; overflow-x: auto; white-space: pre-wrap;">curl -X POST ${baseUrl}/api/send-media \\
+  -H "X-API-Key: wak_your_api_key" \\
+  -F "number=919876543210" \\
+  -F "media=@/path/to/image.jpg" \\
+  -F "caption=Check out this image!"</pre>
+                            </div>
+                        </div>
+                        <button class="btn-preview" onclick="previewMessage('image', 'Check out this image!')" style="background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 13px;">
+                            <i class="fas fa-eye"></i> Preview in Chat
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Send Buttons -->
+                <div class="cyber-card api-endpoint" style="margin-bottom: 20px;">
+                    <div class="card-header" style="cursor: pointer;" onclick="toggleApiEndpoint(this)">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <span style="background: var(--accent); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">POST</span>
+                            <div>
+                                <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">/api/send-buttons</h3>
+                                <p style="margin: 5px 0 0 0; font-size: 12px; color: var(--text-secondary);">Send interactive button message</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-down" style="color: var(--text-secondary); transition: transform 0.3s;"></i>
+                    </div>
+                    <div class="endpoint-content" style="padding: 20px; display: none;">
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">Request Body</h4>
+                            <div style="background: var(--bg-dark); border-radius: 8px; padding: 15px; border: 1px solid var(--border-color);">
+                                <pre style="margin: 0; color: var(--text-secondary); font-size: 12px; overflow-x: auto;">{
+  "account_id": "your-account-uuid",
+  "number": "919876543210",
+  "body": "Please select an option:",
+  "title": "Menu",
+  "footer": "Powered by WA Multi",
+  "buttons": ["Option 1", "Option 2", "Option 3"]
+}</pre>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">cURL Example</h4>
+                            <div style="background: #1a1a2e; border-radius: 8px; padding: 15px; position: relative; border: 1px solid var(--border-color);">
+                                <button onclick="copyCode(this)" style="position: absolute; top: 10px; right: 10px; background: var(--primary); border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                                <pre style="margin: 0; color: #e0e0e0; font-size: 11px; overflow-x: auto; white-space: pre-wrap;">curl -X POST ${baseUrl}/api/send-buttons \\
+  -H "Content-Type: application/json" \\
+  -H "Cookie: connect.sid=your_session_cookie" \\
+  -d '{
+    "account_id": "your-account-uuid",
+    "number": "919876543210",
+    "body": "Please select an option:",
+    "buttons": ["Option 1", "Option 2", "Option 3"]
+  }'</pre>
+                            </div>
+                        </div>
+                        <button class="btn-preview" onclick="previewMessage('buttons', 'Please select an option:')" style="background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 13px;">
+                            <i class="fas fa-eye"></i> Preview in Chat
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Send List -->
+                <div class="cyber-card api-endpoint" style="margin-bottom: 20px;">
+                    <div class="card-header" style="cursor: pointer;" onclick="toggleApiEndpoint(this)">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <span style="background: var(--accent); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">POST</span>
+                            <div>
+                                <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">/api/send-list</h3>
+                                <p style="margin: 5px 0 0 0; font-size: 12px; color: var(--text-secondary);">Send interactive list message</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-down" style="color: var(--text-secondary); transition: transform 0.3s;"></i>
+                    </div>
+                    <div class="endpoint-content" style="padding: 20px; display: none;">
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">Request Body</h4>
+                            <div style="background: var(--bg-dark); border-radius: 8px; padding: 15px; border: 1px solid var(--border-color);">
+                                <pre style="margin: 0; color: var(--text-secondary); font-size: 12px; overflow-x: auto;">{
+  "account_id": "your-account-uuid",
+  "number": "919876543210",
+  "body": "Please choose from the menu:",
+  "button_text": "View Options",
+  "title": "Main Menu",
+  "sections": [
+    {
+      "title": "Products",
+      "rows": [
+        {"id": "1", "title": "Product A", "description": "Best seller"},
+        {"id": "2", "title": "Product B", "description": "New arrival"}
+      ]
+    }
+  ]
+}</pre>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: var(--text-primary); margin: 0 0 10px 0; font-size: 14px;">cURL Example</h4>
+                            <div style="background: #1a1a2e; border-radius: 8px; padding: 15px; position: relative; border: 1px solid var(--border-color);">
+                                <button onclick="copyCode(this)" style="position: absolute; top: 10px; right: 10px; background: var(--primary); border: none; color: white; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                                <pre style="margin: 0; color: #e0e0e0; font-size: 11px; overflow-x: auto; white-space: pre-wrap;">curl -X POST ${baseUrl}/api/send-list \\
+  -H "Content-Type: application/json" \\
+  -H "Cookie: connect.sid=your_session_cookie" \\
+  -d '{
+    "account_id": "your-account-uuid",
+    "number": "919876543210",
+    "body": "Please choose from the menu:",
+    "button_text": "View Options",
+    "sections": [{"title": "Products", "rows": [{"id": "1", "title": "Product A"}]}]
+  }'</pre>
+                            </div>
+                        </div>
+                        <button class="btn-preview" onclick="previewMessage('list', 'Please choose from the menu:')" style="background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 13px;">
+                            <i class="fas fa-eye"></i> Preview in Chat
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Response Codes -->
+                <div class="cyber-card" style="margin-bottom: 20px;">
+                    <div class="card-header">
+                        <div>
+                            <h2 class="card-title"><i class="fas fa-exchange-alt" style="color: var(--primary); margin-right: 10px;"></i>Response Codes</h2>
+                        </div>
+                    </div>
+                    <div style="padding: 20px;">
+                        <div style="display: grid; gap: 10px;">
+                            <div style="display: flex; align-items: center; gap: 15px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
+                                <span style="background: var(--success); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">200</span>
+                                <span style="color: var(--text-primary);">Success - Message sent/queued</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 15px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
+                                <span style="background: var(--warning); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">400</span>
+                                <span style="color: var(--text-primary);">Bad Request - Missing required fields</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 15px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
+                                <span style="background: var(--error); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">401</span>
+                                <span style="color: var(--text-primary);">Unauthorized - Invalid or missing API key</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 15px; padding: 10px; background: var(--bg-dark); border-radius: 8px;">
+                                <span style="background: var(--error); color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600;">500</span>
+                                <span style="color: var(--text-primary);">Server Error - Internal failure</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: WhatsApp Preview -->
+            <div class="whatsapp-preview-container" style="position: sticky; top: 20px; height: fit-content;">
+                <div class="cyber-card">
+                    <div class="card-header" style="background: #075e54; border-radius: 15px 15px 0 0;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="width: 40px; height: 40px; background: #128c7e; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                                <i class="fab fa-whatsapp" style="color: white; font-size: 20px;"></i>
+                            </div>
+                            <div>
+                                <h3 style="margin: 0; font-size: 16px; color: white;">Chat Preview</h3>
+                                <p style="margin: 2px 0 0 0; font-size: 11px; color: rgba(255,255,255,0.7);">+91 98765 43210</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="whatsappChatPreview" style="background: #e5ddd5; min-height: 400px; padding: 15px; background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyBAMAAADsEZWCAAAAG1BMVEXMzMzb29vn5+ff39/o6Ojl5eXd3d3V1dXR0dHJycnhP4DfAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAQklEQVQ4jWNgGAVDEjAwMDAwGBkZGTkyOTkxMDMzMzQYNRoVjYpGRaOiUdGoaFQ0KhoVjYpGRaOiUdGoaFQ0dEQALi4h5r+wU0AAAAAASUVORK5CYII=');">
+                        <!-- Incoming message example -->
+                        <div class="wa-message incoming" style="max-width: 80%; margin-bottom: 10px;">
+                            <div style="background: white; padding: 8px 12px; border-radius: 0 8px 8px 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.1);">
+                                <p style="margin: 0; font-size: 14px; color: #303030;">Hi! I need help with my order</p>
+                                <span style="font-size: 11px; color: #999; float: right; margin-top: 4px;">10:30 AM</span>
+                            </div>
+                        </div>
+                        <!-- Outgoing message example -->
+                        <div id="previewMessageContainer" class="wa-message outgoing" style="max-width: 80%; margin-left: auto; margin-bottom: 10px;">
+                            <div style="background: #dcf8c6; padding: 8px 12px; border-radius: 8px 0 8px 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.1);">
+                                <p id="previewMessageText" style="margin: 0; font-size: 14px; color: #303030;">Hello from WhatsApp API!</p>
+                                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px;">
+                                    <span style="font-size: 11px; color: #999;">10:31 AM</span>
+                                    <i class="fas fa-check-double" style="color: #53bdeb; font-size: 12px;"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="padding: 10px; background: #f0f0f0; border-radius: 0 0 15px 15px; display: flex; align-items: center; gap: 10px;">
+                        <i class="far fa-smile" style="color: #919191; font-size: 24px;"></i>
+                        <div style="flex: 1; background: white; border-radius: 20px; padding: 8px 15px;">
+                            <span style="color: #999; font-size: 14px;">Type a message</span>
+                        </div>
+                        <i class="fas fa-microphone" style="color: #919191; font-size: 24px;"></i>
+                    </div>
+                </div>
+
+                <div style="margin-top: 15px; padding: 15px; background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border-color);">
+                    <h4 style="margin: 0 0 10px 0; color: var(--text-primary); font-size: 14px;"><i class="fas fa-lightbulb" style="color: var(--accent); margin-right: 8px;"></i>Quick Tips</h4>
+                    <ul style="margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 12px; line-height: 1.8;">
+                        <li>Always include country code (e.g., 91 for India)</li>
+                        <li>API key starts with <code style="color: var(--primary);">wak_</code></li>
+                        <li>Max 3 buttons per message</li>
+                        <li>Media files: Max 16MB</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// Toggle API endpoint accordion
+function toggleApiEndpoint(header) {
+    const card = header.closest('.api-endpoint');
+    const content = card.querySelector('.endpoint-content');
+    const icon = header.querySelector('.fa-chevron-down');
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.style.transform = 'rotate(180deg)';
+    } else {
+        content.style.display = 'none';
+        icon.style.transform = 'rotate(0deg)';
+    }
+}
+
+// Copy code block
+function copyCode(btn) {
+    const pre = btn.parentElement.querySelector('pre');
+    const text = pre.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+        setTimeout(() => {
+            btn.innerHTML = originalText;
+        }, 2000);
+    });
+}
+
+// Preview message in WhatsApp chat
+function previewMessage(type, text) {
+    const container = document.getElementById('previewMessageContainer');
+    const now = new Date();
+    const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    
+    let messageHtml = '';
+    
+    switch(type) {
+        case 'text':
+            messageHtml = '<div style="background: #dcf8c6; padding: 8px 12px; border-radius: 8px 0 8px 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.1);">' +
+                '<p style="margin: 0; font-size: 14px; color: #303030;">' + text + '</p>' +
+                '<div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px;">' +
+                '<span style="font-size: 11px; color: #999;">' + time + '</span>' +
+                '<i class="fas fa-check-double" style="color: #53bdeb; font-size: 12px;"></i>' +
+                '</div></div>';
+            break;
+            
+        case 'image':
+            messageHtml = '<div style="background: #dcf8c6; padding: 4px; border-radius: 8px 0 8px 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.1);">' +
+                '<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 150px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">' +
+                '<i class="fas fa-image" style="color: white; font-size: 40px; opacity: 0.8;"></i></div>' +
+                '<div style="padding: 8px;"><p style="margin: 0; font-size: 14px; color: #303030;">' + text + '</p>' +
+                '<div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px;">' +
+                '<span style="font-size: 11px; color: #999;">' + time + '</span>' +
+                '<i class="fas fa-check-double" style="color: #53bdeb; font-size: 12px;"></i></div></div></div>';
+            break;
+            
+        case 'buttons':
+            messageHtml = '<div style="background: #dcf8c6; border-radius: 8px 0 8px 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.1); overflow: hidden;">' +
+                '<div style="padding: 8px 12px;"><p style="margin: 0; font-size: 14px; color: #303030;">' + text + '</p>' +
+                '<div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px;">' +
+                '<span style="font-size: 11px; color: #999;">' + time + '</span>' +
+                '<i class="fas fa-check-double" style="color: #53bdeb; font-size: 12px;"></i></div></div>' +
+                '<div style="border-top: 1px solid rgba(0,0,0,0.1);">' +
+                '<button style="width: 100%; padding: 10px; background: transparent; border: none; border-bottom: 1px solid rgba(0,0,0,0.1); color: #00a5f4; font-size: 14px; cursor: pointer;">Option 1</button>' +
+                '<button style="width: 100%; padding: 10px; background: transparent; border: none; border-bottom: 1px solid rgba(0,0,0,0.1); color: #00a5f4; font-size: 14px; cursor: pointer;">Option 2</button>' +
+                '<button style="width: 100%; padding: 10px; background: transparent; border: none; color: #00a5f4; font-size: 14px; cursor: pointer;">Option 3</button></div></div>';
+            break;
+            
+        case 'list':
+            messageHtml = '<div style="background: #dcf8c6; border-radius: 8px 0 8px 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.1); overflow: hidden;">' +
+                '<div style="padding: 8px 12px;"><p style="margin: 0; font-size: 14px; color: #303030;">' + text + '</p>' +
+                '<div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px;">' +
+                '<span style="font-size: 11px; color: #999;">' + time + '</span>' +
+                '<i class="fas fa-check-double" style="color: #53bdeb; font-size: 12px;"></i></div></div>' +
+                '<div style="border-top: 1px solid rgba(0,0,0,0.1); padding: 10px; text-align: center;">' +
+                '<button style="background: transparent; border: 1px solid #00a5f4; color: #00a5f4; padding: 8px 20px; border-radius: 20px; font-size: 14px; cursor: pointer;">' +
+                '<i class="fas fa-list-ul" style="margin-right: 6px;"></i>View Options</button></div></div>';
+            break;
+    }
+    
+    container.innerHTML = messageHtml;
+    
+    // Add animation
+    container.style.opacity = '0';
+    container.style.transform = 'translateY(10px)';
+    setTimeout(function() {
+        container.style.transition = 'all 0.3s ease';
+        container.style.opacity = '1';
+        container.style.transform = 'translateY(0)';
+    }, 50);
+}
+
+// Make functions globally accessible
+window.toggleApiEndpoint = toggleApiEndpoint;
+window.copyCode = copyCode;
+window.previewMessage = previewMessage;
 
 async function loadAllWebhooks() {
     const container = document.getElementById('allWebhooksContainer');
