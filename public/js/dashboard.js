@@ -1036,45 +1036,45 @@ async function showApiKeyModal(accountId) {
     
     // Create modal HTML
     const modalHtml = `
-        <div class="modal-overlay" id="apiKeyModal" onclick="if(event.target === this) closeModal('apiKeyModal')" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-            <div class="modal-dialog" style="max-width: 600px; width: 90%; background: var(--bg-card); border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
-                <div class="modal-header">
-                    <h3><i class="fas fa-key"></i> API Key - ${accountName}</h3>
-                    <button class="btn-close" onclick="closeModal('apiKeyModal')">&times;</button>
+        <div class="modal-overlay" id="apiKeyModal" onclick="if(event.target === this) closeModal('apiKeyModal')" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+            <div class="modal-dialog" style="max-width: 600px; width: 90%; background: var(--bg-card); border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
+                <div class="modal-header" style="padding: 20px 25px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="color: var(--text-primary); margin: 0; font-size: 18px;"><i class="fas fa-key" style="color: var(--primary); margin-right: 10px;"></i> API Key - ${accountName}</h3>
+                    <button class="btn-close" onclick="closeModal('apiKeyModal')" style="background: transparent; border: none; color: var(--text-secondary); font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
                 </div>
-                <div class="modal-body" style="padding: 20px;">
+                <div class="modal-body" style="padding: 25px;">
                     <div style="margin-bottom: 20px;">
-                        <label style="display: block; margin-bottom: 8px; font-weight: 600;">Account ID</label>
+                        <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary);">Account ID</label>
                         <div style="display: flex; gap: 10px;">
                             <input type="text" id="apiKeyAccountId" value="${accountId}" readonly 
-                                style="flex: 1; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-family: monospace; font-size: 12px;">
-                            <button class="btn btn-secondary" onclick="copyToClipboard('${accountId}', 'Account ID')">
+                                style="flex: 1; padding: 12px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; font-family: monospace; font-size: 12px; color: var(--text-primary);">
+                            <button class="btn btn-secondary" onclick="copyToClipboard('${accountId}', 'Account ID')" style="padding: 12px 16px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); cursor: pointer;">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
                     </div>
                     <div style="margin-bottom: 20px;">
-                        <label style="display: block; margin-bottom: 8px; font-weight: 600;">API Key</label>
+                        <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary);">API Key</label>
                         <div style="display: flex; gap: 10px;">
                             <input type="text" id="apiKeyValue" value="Loading..." readonly 
-                                style="flex: 1; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-family: monospace; font-size: 12px;">
-                            <button class="btn btn-secondary" onclick="copyApiKey()">
+                                style="flex: 1; padding: 12px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; font-family: monospace; font-size: 12px; color: var(--text-primary);">
+                            <button class="btn btn-secondary" onclick="copyApiKey()" style="padding: 12px 16px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); cursor: pointer;">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
                     </div>
-                    <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                        <h4 style="margin: 0 0 10px 0; font-size: 14px;"><i class="fas fa-code"></i> Example Usage</h4>
-                        <pre style="margin: 0; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">curl -X POST https://your-server.com/api/send \\
+                    <div style="background: var(--bg-dark); padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-color);">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: var(--text-primary);"><i class="fas fa-code" style="color: var(--primary); margin-right: 8px;"></i>Example Usage</h4>
+                        <pre style="margin: 0; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-secondary); background: transparent;">curl -X POST https://your-server.com/api/send \\
   -H "Content-Type: application/json" \\
-  -H "X-API-Key: <span id="apiKeyExample">YOUR_API_KEY</span>" \\
+  -H "X-API-Key: <span id="apiKeyExample" style="color: var(--primary);">YOUR_API_KEY</span>" \\
   -d '{"account_id": "${accountId}", "number": "919876543210", "message": "Hello!"}'</pre>
                     </div>
                     <div style="display: flex; gap: 10px; justify-content: space-between;">
-                        <button class="btn btn-danger" onclick="regenerateApiKey('${accountId}')" id="regenerateApiKeyBtn">
+                        <button class="btn btn-danger" onclick="regenerateApiKey('${accountId}')" id="regenerateApiKeyBtn" style="padding: 12px 20px; background: var(--error); border: none; border-radius: 8px; color: white; cursor: pointer; font-weight: 600;">
                             <i class="fas fa-sync-alt"></i> Regenerate Key
                         </button>
-                        <button class="btn btn-secondary" onclick="closeModal('apiKeyModal')">Close</button>
+                        <button class="btn btn-secondary" onclick="closeModal('apiKeyModal')" style="padding: 12px 20px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); cursor: pointer;">Close</button>
                     </div>
                 </div>
             </div>
