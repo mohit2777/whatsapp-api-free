@@ -744,6 +744,10 @@ class WhatsAppManager {
         // Special handling for restartRequired (515) - QR timeout or protocol restart
         const isRestartRequired = statusCode === 515 || statusCode === DisconnectReason.restartRequired;
 
+        // Special handling for "Connection Closed" (428) - Precondition Required
+        // This often happens due to network flakiness or server-side closure
+        const isConnectionClosed = statusCode === 428;
+
         if (statusCode === DisconnectReason.loggedOut) {
           // User logged out - MUST clear all auth data
           logger.warn(`[Auth] Account ${accountId} logged out - clearing all auth`);
@@ -758,11 +762,11 @@ class WhatsAppManager {
           }
           
           await db.updateAccount(accountId, {
-            status: 'logged_out',
+            status: 'disconnected', // Changed from 'logged_out' to match SQL constraint
             error_message: 'Logged out - QR scan required',
             updated_at: new Date().toISOString()
           });
-          this.accountStatus.set(accountId, 'logged_out');
+          this.accountStatus.set(accountId, 'disconnected'); // Match SQL status
           this.clients.delete(accountId);
           this.authStates.delete(accountId);
           this.reconnectAttempts.delete(accountId);
@@ -804,25 +808,33 @@ class WhatsAppManager {
               }
             }, backoffMs);
           }
-        } else if (isRestartRequired) {
+        } else if (isRestartRequired || isConnectionClosed) {
           // restartRequired (515) - Normal during QR scanning
+          // Connection Closed (428) - Retryable error
           // Don't wipe local files - they contain in-progress handshake
           const currentStatus = this.accountStatus.get(accountId);
           const isQrPhase = currentStatus === 'qr_ready' || currentStatus === 'needs_qr';
           
-          logger.info(`[QR] Restart required for ${accountId} (QR phase: ${isQrPhase})`);
-          this.accountStatus.set(accountId, 'qr_ready');
+          const reasonType = isConnectionClosed ? 'Connection Closed (428)' : 'Restart Required (515)';
+          logger.info(`[Reconnect] ${reasonType} for ${accountId} (QR phase: ${isQrPhase})`);
+          
+          if (!isQrPhase) {
+            this.accountStatus.set(accountId, 'reconnecting');
+          }
           
           setTimeout(async () => {
             if (!this.isShuttingDown && !this.deletedAccounts.has(accountId)) {
-              const status = this.accountStatus.get(accountId);
-              if (status !== 'ready') {
-                logger.info(`[QR] Regenerating QR for ${accountId}...`);
+              // If it was a 428 error, we definitely want to try reconnecting
+              const shouldRetry = isConnectionClosed || this.accountStatus.get(accountId) !== 'ready';
+              
+              if (shouldRetry) {
+                logger.info(`[Reconnect] Retrying connection for ${accountId}...`);
                 try {
                   // skipRestore=true preserves local handshake files
+                  // IMPORTANT: For 428 errors, we might want to skip restore to keep session state
                   await this.startBaileysClient(accountId, true);
                 } catch (err) {
-                  logger.error(`[QR] Failed for ${accountId}:`, err.message);
+                  logger.error(`[Reconnect] Failed for ${accountId}:`, err.message);
                   this.accountStatus.set(accountId, 'disconnected');
                 }
               }
