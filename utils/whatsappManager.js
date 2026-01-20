@@ -858,9 +858,32 @@ class WhatsAppManager {
     });
 
     // Credentials updated - save to LOCAL file only (atomic keys already persisted)
-    // CRITICAL: This ONLY updates creds.json, NOT the database
-    // Database sync happens on connection.open stabilization and periodic saves
-    sock.ev.on('creds.update', saveCreds);
+    // CRITICAL: We now also sync to DB with debounce to fix "Waiting for message" issues
+    sock.ev.on('creds.update', async () => {
+      await saveCreds();
+      
+      // Debounced DB Sync (2s)
+      // This ensures that new encryption keys (PreKeys) are persisted to the DB
+      // quickly enough so that if the bot restarts, it doesn't lose the keys
+      // that the recipient is expecting.
+      const authState = this.authStates.get(accountId);
+      if (authState) {
+        if (authState.saveTimer) clearTimeout(authState.saveTimer);
+        
+        authState.saveTimer = setTimeout(async () => {
+          if (this.isShuttingDown || this.deletedAccounts.has(accountId)) return;
+          try {
+            if (authState.sessionPath) {
+              await saveAuthToDatabase(accountId, authState.sessionPath);
+              // limit logging to debug to prevent spam
+              // logger.debug(`[Auth] 💾 Synced to DB for ${accountId}`);
+            }
+          } catch (e) {
+            logger.warn(`[Auth] Sync failed during creds update for ${accountId}: ${e.message}`);
+          }
+        }, 2000);
+      }
+    });
 
     // History sync - log only, no special handling needed
     // Keys are saved atomically as they're created
