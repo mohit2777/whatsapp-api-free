@@ -510,6 +510,22 @@ class AccountRateLimiter {
 
 const rateLimiter = new AccountRateLimiter();
 
+// Global message store for retry support (persists across reconnects)
+// Key: messageId, Value: { message, timestamp, accountId }
+const globalMessageStore = new Map();
+const MESSAGE_STORE_MAX_SIZE = 1000;
+const MESSAGE_STORE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Cleanup old messages periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, data] of globalMessageStore) {
+    if (now - data.timestamp > MESSAGE_STORE_TTL) {
+      globalMessageStore.delete(id);
+    }
+  }
+}, 60000);
+
 class WhatsAppManager {
   constructor() {
     this.clients = new Map();       // accountId -> socket
@@ -699,11 +715,20 @@ class WhatsAppManager {
         // Message retry configuration - fixes encryption issues
         retryRequestDelayMs: 250,
         getMessage: async (key) => {
-          // Return cached message for retry
+          // Check global message store first (persists across reconnects)
+          if (globalMessageStore.has(key.id)) {
+            const stored = globalMessageStore.get(key.id);
+            logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in store`);
+            return stored.message;
+          }
+          // Fallback to per-socket retry map
           if (messageRetryMap.has(key.id)) {
+            logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in retry map`);
             return messageRetryMap.get(key.id);
           }
-          return { conversation: '' };
+          // Return undefined to signal message not found (don't return empty message!)
+          logger.warn(`[getMessage] Message ${key.id?.slice(0, 15)}... not found for retry`);
+          return undefined;
         },
         msgRetryCounterCache: messageRetryMap
       });
@@ -1309,11 +1334,23 @@ class WhatsAppManager {
       // Record message for rate limiting
       rateLimiter.recordMessage(accountId);
 
-      // Cache message for retry (fixes "Waiting for this message" issue)
-      if (sock.messageRetryMap && result?.key?.id) {
-        sock.messageRetryMap.set(result.key.id, msgContent);
-        // Clean up old entries after 5 minutes
-        setTimeout(() => sock.messageRetryMap?.delete(result.key.id), 5 * 60 * 1000);
+      // Store message in global store for retry support (prevents "Waiting for this message")
+      if (result?.key?.id) {
+        // Evict oldest if store is full
+        if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
+          const oldestKey = globalMessageStore.keys().next().value;
+          globalMessageStore.delete(oldestKey);
+        }
+        globalMessageStore.set(result.key.id, {
+          message: msgContent,
+          timestamp: Date.now(),
+          accountId
+        });
+        
+        // Also store in per-socket map
+        if (sock.messageRetryMap) {
+          sock.messageRetryMap.set(result.key.id, msgContent);
+        }
       }
       // Note: Session keys are saved via creds.update event when they change
 
