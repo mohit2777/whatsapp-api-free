@@ -152,23 +152,12 @@ logger.info(`[Instance] ID: ${INSTANCE_ID}`);
 
 /**
  * Generate stable per-account browser fingerprint
+ * UPDATED: Uses standard Chrome configuration to reduce ban risk
  */
 function getAccountBrowserFingerprint(accountId) {
-  let hash = 0;
-  for (let i = 0; i < accountId.length; i++) {
-    hash = ((hash << 5) - hash) + accountId.charCodeAt(i);
-    hash = hash & hash;
-  }
-  hash = Math.abs(hash);
-  
-  const majorVersion = 118 + (hash % 7);
-  const minorVersion = (hash >> 8) % 10;
-  const patchVersion = (hash >> 16) % 100;
-  
-  const deviceNames = ['WhatsApp Manager', 'WA Business', 'WA Connect', 'WA Hub', 'WA Link'];
-  const deviceIndex = hash % deviceNames.length;
-  
-  return [deviceNames[deviceIndex], 'Chrome', `${majorVersion}.${minorVersion}.${patchVersion}`];
+  // Use a standard, non-suspicious browser signature
+  // Avoids custom strings like 'WhatsApp Manager' which might be flagged
+  return ['Chrome (Windows)', 'Chrome', '120.0.6099.130'];
 }
 
 // ============================================================================
@@ -592,12 +581,14 @@ class WhatsAppManager {
         defaultQueryTimeoutMs: undefined,
         keepAliveIntervalMs: 30000,
         emitOwnEvents: true,
-        markOnlineOnConnect: true,  // Changed: Required for proper message delivery receipts
+        // Anti-ban: Don't mark online immediately to avoid "bot-like" activity spikes
+        markOnlineOnConnect: false, 
         fireInitQueries: true,       // Added: Ensures proper handshake with WhatsApp
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
         // Message retry configuration - fixes encryption issues
-        retryRequestDelayMs: 250,
+        // Anti-ban: Increased delay to prevent rapid-fire retry loops
+        retryRequestDelayMs: 2000,
         getMessage: async (key) => {
           // Check global message store first (persists across reconnects)
           if (globalMessageStore.has(key.id)) {
