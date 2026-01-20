@@ -33,8 +33,15 @@ const SIGNAL_NOISE_PATTERNS = [
 ];
 
 function isSignalNoise(args) {
-  // Check first arg if object
+  // Quick check for common string patterns first
   const firstArg = args[0];
+  if (typeof firstArg === 'string') {
+    if (firstArg.startsWith('Closing session') || 
+        firstArg.includes('SessionEntry') ||
+        firstArg.includes('_chains')) return true;
+  }
+  
+  // Check first arg if object
   if (firstArg && typeof firstArg === 'object') {
     if (firstArg._chains || firstArg.registrationId || firstArg.currentRatchet || 
         firstArg.indexInfo || firstArg.pendingPreKey || firstArg.ephemeralKeyPair) return true;
@@ -1295,6 +1302,9 @@ class WhatsAppManager {
       const msgContent = { text: message };
       
       const result = await sock.sendMessage(jid, msgContent);
+
+      // Log successful send
+      logger.info(`📤 Message sent to ${jid.split('@')[0]} - ID: ${result?.key?.id?.slice(0, 15)}...`);
 
       // Record message for rate limiting
       rateLimiter.recordMessage(accountId);
