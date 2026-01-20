@@ -141,37 +141,30 @@ const MEMORY_CRITICAL_THRESHOLD = 420 * 1024 * 1024; // 420MB
 // ============================================================================
 // AUTH SCHEMA VERSION - INCREMENT ON BAILEYS KEY FORMAT CHANGES
 // ============================================================================
-const AUTH_VERSION = 3;
+const AUTH_VERSION = 4; // Simplified auth format
 
 // ============================================================================
-// INSTANCE OWNERSHIP - Prevents dual-server connection bans
+// INSTANCE ID - For logging and debugging
 // ============================================================================
 const os = require('os');
-const INSTANCE_ID = `${os.hostname()}-${process.pid}-${Date.now()}`;
-const OWNERSHIP_STALE_MS = 5 * 60 * 1000; // 5 minutes = ownership expires
-
+const INSTANCE_ID = `${os.hostname()}-${process.pid}-${Date.now()}`.slice(-20);
 logger.info(`[Instance] ID: ${INSTANCE_ID}`);
 
 /**
  * Generate stable per-account browser fingerprint
- * Uses account ID to seed deterministic but unique values
- * NEVER changes after account creation (consistency = safety)
  */
 function getAccountBrowserFingerprint(accountId) {
-  // Simple hash of accountId to generate stable numbers
   let hash = 0;
   for (let i = 0; i < accountId.length; i++) {
     hash = ((hash << 5) - hash) + accountId.charCodeAt(i);
-    hash = hash & hash; // Convert to 32-bit integer
+    hash = hash & hash;
   }
   hash = Math.abs(hash);
   
-  // Generate stable Chrome version (118-124 range)
   const majorVersion = 118 + (hash % 7);
   const minorVersion = (hash >> 8) % 10;
   const patchVersion = (hash >> 16) % 100;
   
-  // Stable device name variations
   const deviceNames = ['WhatsApp Manager', 'WA Business', 'WA Connect', 'WA Hub', 'WA Link'];
   const deviceIndex = hash % deviceNames.length;
   
@@ -179,25 +172,13 @@ function getAccountBrowserFingerprint(accountId) {
 }
 
 // ============================================================================
-// BAILEYS AUTH STATE MANAGER
+// SIMPLIFIED AUTH STATE MANAGER - Based on Baileys useMultiFileAuthState
 // ============================================================================
-// 
-// CORE PRINCIPLES (non-negotiable):
-// 
-// 1. Baileys auth is authoritative - never merge, always overwrite
-// 2. One writer per account - use locks to prevent parallel saves  
-// 3. Restore BEFORE connect - never connect without valid auth
-// 4. Save on crypto change (creds.update), not on message send
-// 5. One instance per account - prevent concurrent connections
 //
-// CRITICAL RULES:
+// KEY PRINCIPLE: Use Baileys' own useMultiFileAuthState for local files,
+// then sync to database ONLY on connection.open and periodic intervals.
 //
-// ❌ NEVER restore partial auth - if ANY component missing, discard ALL
-// ❌ NEVER merge with existing data - always full overwrite
-// ❌ NEVER connect before auth is restored
-// ❌ NEVER skip stabilization save after connection.open
-// ❌ NEVER allow two servers to connect same account
-//
+// This is the SAME pattern that works for millions of users.
 // QR PHASE HANDLING:
 //
 // During QR scanning, local files are VOLATILE (not yet persisted to DB).
@@ -210,29 +191,14 @@ function getAccountBrowserFingerprint(accountId) {
 //
 // ============================================================================
 
-// Save locks to prevent parallel writes per account
-const saveLocks = new Map(); // accountId -> boolean
-
-// Track accounts in QR scanning phase (volatile local state)
-const qrInProgress = new Set(); // accountId set
-
 /**
- * Restore auth from Supabase to local files BEFORE socket creation
- * 
- * CRITICAL RULE: DATABASE IS THE SOURCE OF TRUTH.
- * Local filesystem is disposable cache - NEVER trust it over DB.
- * 
- * This function ALWAYS:
- * 1. Wipes local session directory first
- * 2. Fetches from database
- * 3. Validates completely before restoring
- * 
- * Returns: { restored: boolean, sessionPath: string, needsQR: boolean, ownedByOther: boolean }
+ * SIMPLIFIED AUTH: Restore session from database to local files
+ * Only called when starting a client that has saved auth
  */
 async function restoreAuthFromDatabase(accountId) {
   const sessionPath = path.join('./wa-sessions-temp', accountId);
   
-  // ALWAYS start with clean directory - local files are NOT authoritative
+  // Ensure clean directory
   if (fs.existsSync(sessionPath)) {
     fs.rmSync(sessionPath, { recursive: true, force: true });
   }
@@ -241,119 +207,77 @@ async function restoreAuthFromDatabase(accountId) {
   try {
     const sessionData = await db.getSessionData(accountId);
     
-    // No saved session - needs QR scan
-    if (!sessionData || sessionData.length < 10) {
-      logger.info(`[Auth] No saved session for ${accountId} - needs QR scan`);
-      return { restored: false, sessionPath, needsQR: true, ownedByOther: false };
+    if (!sessionData || sessionData.length < 100) {
+      logger.info(`[Auth] No saved session for ${accountId}`);
+      return { restored: false, sessionPath };
     }
 
-    // Decode auth blob
     let decoded;
     try {
       decoded = JSON.parse(Buffer.from(sessionData, 'base64').toString('utf-8'));
     } catch (e) {
-      logger.error(`[Auth] Corrupted auth blob for ${accountId} - clearing`);
+      logger.error(`[Auth] Corrupted session for ${accountId}`);
       await db.clearSessionData(accountId);
-      return { restored: false, sessionPath, needsQR: true, ownedByOther: false };
+      return { restored: false, sessionPath };
     }
 
-    // =========================================================================
-    // VERSION CHECK - Schema safety
-    // =========================================================================
-    const savedVersion = decoded.version || 1;
-    if (savedVersion < AUTH_VERSION) {
-      logger.warn(`[Auth] Auth version mismatch for ${accountId}: saved=${savedVersion}, required=${AUTH_VERSION}`);
+    // Version check
+    if ((decoded.version || 1) < AUTH_VERSION) {
+      logger.warn(`[Auth] Old auth version for ${accountId}, clearing`);
       await db.clearSessionData(accountId);
-      return { restored: false, sessionPath, needsQR: true, ownedByOther: false };
+      return { restored: false, sessionPath };
     }
 
-    // =========================================================================
-    // STRUCTURE VALIDATION - creds.me.id is the ONLY valid indicator
-    // If me.id is missing, the session does not exist - period.
-    // =========================================================================
+    // Must have valid creds with me.id
     if (!decoded?.creds?.me?.id) {
-      logger.warn(`[Auth] Auth for ${accountId} has no creds.me.id - invalid session`);
+      logger.warn(`[Auth] No me.id in session for ${accountId}`);
       await db.clearSessionData(accountId);
-      return { restored: false, sessionPath, needsQR: true, ownedByOther: false };
+      return { restored: false, sessionPath };
     }
 
-    // Check for required Signal keys
-    if (!decoded.keys || typeof decoded.keys !== 'object' || Object.keys(decoded.keys).length === 0) {
-      logger.warn(`[Auth] Auth for ${accountId} has no keys - invalid session`);
-      await db.clearSessionData(accountId);
-      return { restored: false, sessionPath, needsQR: true, ownedByOther: false };
-    }
+    // Restore creds.json
+    fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(decoded.creds, null, 2));
 
-    // =========================================================================
-    // FULL RESTORE - Write all files
-    // =========================================================================
-    fs.writeFileSync(
-      path.join(sessionPath, 'creds.json'),
-      JSON.stringify(decoded.creds, null, 2)
-    );
-
+    // Restore all key files
     let keyCount = 0;
-    for (const [filename, data] of Object.entries(decoded.keys)) {
-      if (filename && data) {
-        fs.writeFileSync(
-          path.join(sessionPath, filename),
-          JSON.stringify(data, null, 2)
-        );
-        keyCount++;
+    if (decoded.keys && typeof decoded.keys === 'object') {
+      for (const [filename, data] of Object.entries(decoded.keys)) {
+        if (filename && data) {
+          fs.writeFileSync(path.join(sessionPath, filename), JSON.stringify(data, null, 2));
+          keyCount++;
+        }
       }
     }
 
-    logger.info(`[Auth] ✅ Restored auth for ${accountId}: v${savedVersion}, creds + ${keyCount} keys`);
-    return { restored: true, sessionPath, needsQR: false, ownedByOther: false };
+    logger.info(`[Auth] ✅ Restored ${accountId}: creds + ${keyCount} keys`);
+    return { restored: true, sessionPath };
 
   } catch (err) {
     logger.error(`[Auth] Restore failed for ${accountId}: ${err.message}`);
-    try {
-      await db.clearSessionData(accountId);
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-      fs.mkdirSync(sessionPath, { recursive: true });
-    } catch {}
-    return { restored: false, sessionPath, needsQR: true, ownedByOther: false };
+    return { restored: false, sessionPath };
   }
 }
 
 /**
- * Save auth to Supabase - ALWAYS overwrites, never merges
- * Uses lock to prevent parallel saves
+ * SIMPLIFIED AUTH: Save current session to database
+ * Called after connection.open and periodically
  */
-async function saveAuthToDatabase(accountId, sessionPath, force = false) {
-  // Check lock
-  if (saveLocks.get(accountId)) {
-    if (!force) {
-      logger.debug(`[Auth] Save already in progress for ${accountId}, skipping`);
-      return false;
-    }
-    // If forced, wait for existing save
-    let waitCount = 0;
-    while (saveLocks.get(accountId) && waitCount < 50) {
-      await new Promise(r => setTimeout(r, 100));
-      waitCount++;
-    }
-  }
-
-  saveLocks.set(accountId, true);
-
+async function saveAuthToDatabase(accountId, sessionPath) {
   try {
     const credsPath = path.join(sessionPath, 'creds.json');
     if (!fs.existsSync(credsPath)) {
-      logger.warn(`[Auth] No creds.json to save for ${accountId}`);
       return false;
     }
 
     const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
 
-    // Don't save incomplete auth (no me.id = not authenticated yet)
+    // Only save if we have valid auth (me.id present)
     if (!creds.me?.id) {
-      logger.debug(`[Auth] Skipping save - auth not complete for ${accountId}`);
+      logger.debug(`[Auth] Skip save - no me.id for ${accountId}`);
       return false;
     }
 
-    // Collect ALL key files (complete snapshot)
+    // Collect all key files
     const keys = {};
     const files = fs.readdirSync(sessionPath);
     for (const file of files) {
@@ -364,205 +288,23 @@ async function saveAuthToDatabase(accountId, sessionPath, force = false) {
       }
     }
 
-    // Create complete auth blob with ownership and versioning
     const authBlob = {
       creds,
       keys,
-      version: AUTH_VERSION,           // Schema version for migration safety
-      activeInstanceId: INSTANCE_ID,   // Ownership guard - prevents concurrent connections
+      version: AUTH_VERSION,
       savedAt: new Date().toISOString()
     };
 
     const base64 = Buffer.from(JSON.stringify(authBlob)).toString('base64');
-    
-    // UPSERT - always overwrite, never merge
     await db.saveSessionData(accountId, base64);
     
-    logger.info(`[Auth] ✅ Saved auth for ${accountId}: v${AUTH_VERSION}, ${Object.keys(keys).length} keys, instance=${INSTANCE_ID.slice(-12)}`);
+    logger.info(`[Auth] ✅ Saved ${accountId}: ${Object.keys(keys).length} keys`);
     return true;
 
   } catch (err) {
     logger.error(`[Auth] Save failed for ${accountId}: ${err.message}`);
     return false;
-  } finally {
-    saveLocks.set(accountId, false);
   }
-}
-
-// ============================================================================
-// ATOMIC KEY STORE - Evolution API Pattern
-// ============================================================================
-// 
-// THE PROBLEM: Saving auth DURING message encryption corrupts Signal sessions.
-// creds.update fires DURING encryption, so any save triggered by it is dangerous.
-//
-// THE SOLUTION (Evolution API pattern):
-// 1. Separate CREDS storage from KEYS storage
-// 2. KEYS are saved IMMEDIATELY and ATOMICALLY when Baileys calls keys.set()
-// 3. CREDS are saved ONLY after connection.open and on graceful shutdown
-// 4. NEVER save the full auth blob during crypto operations
-//
-// This works because:
-// - Signal keys must persist immediately to maintain ratchet consistency
-// - Creds (identity, registration) rarely change after initial auth
-// - makeCacheableSignalKeyStore adds in-memory buffering for reads
-//
-// ============================================================================
-
-// Track connection state for safe creds saving
-const connectionReady = new Map(); // accountId -> boolean
-
-/**
- * Create ATOMIC key store that saves keys immediately to separate files
- * This prevents the "bulk blob save during crypto" problem
- */
-function createAtomicKeyStore(accountId, sessionPath) {
-  const keyCache = new Map(); // In-memory cache for fast reads
-  
-  // Load existing keys into cache on startup
-  const loadKeysToCache = () => {
-    try {
-      const files = fs.readdirSync(sessionPath);
-      for (const file of files) {
-        if (file !== 'creds.json' && file.endsWith('.json')) {
-          try {
-            const data = JSON.parse(fs.readFileSync(path.join(sessionPath, file), 'utf-8'));
-            keyCache.set(file.replace('.json', ''), data);
-          } catch {}
-        }
-      }
-    } catch {}
-  };
-  
-  loadKeysToCache();
-  
-  return {
-    get: async (type, ids) => {
-      const data = {};
-      for (const id of ids) {
-        const key = `${type}-${id}`;
-        // Check memory cache first
-        if (keyCache.has(key)) {
-          data[id] = keyCache.get(key);
-        } else {
-          // Fall back to file
-          const filePath = path.join(sessionPath, `${key}.json`);
-          if (fs.existsSync(filePath)) {
-            try {
-              const value = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              keyCache.set(key, value); // Cache for next time
-              data[id] = value;
-            } catch {}
-          }
-        }
-      }
-      return data;
-    },
-    
-    set: async (data) => {
-      // ATOMIC: Save each key immediately to its own file
-      // This is the critical difference from bulk blob saves
-      for (const category in data) {
-        for (const id in data[category]) {
-          const key = `${category}-${id}`;
-          const value = data[category][id];
-          const filePath = path.join(sessionPath, `${key}.json`);
-          
-          if (value) {
-            // Update cache AND file atomically
-            keyCache.set(key, value);
-            try {
-              fs.writeFileSync(filePath, JSON.stringify(value));
-            } catch (e) {
-              logger.warn(`[AtomicKeys] Failed to save ${key}: ${e.message}`);
-            }
-          } else {
-            // Delete key
-            keyCache.delete(key);
-            try {
-              if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-            } catch {}
-          }
-        }
-      }
-      
-      // IMPORTANT: Do NOT trigger bulk auth save here
-      // Keys are already persisted individually
-    }
-  };
-}
-
-/**
- * Create auth state with ATOMIC key storage
- * Keys save immediately, creds save only when safe
- */
-async function useDBAuthState(accountId) {
-  const sessionPath = path.join('./wa-sessions-temp', accountId);
-  
-  // Ensure directory exists
-  if (!fs.existsSync(sessionPath)) {
-    fs.mkdirSync(sessionPath, { recursive: true });
-  }
-
-  // Load creds from file
-  const credsPath = path.join(sessionPath, 'creds.json');
-  let creds;
-  if (fs.existsSync(credsPath)) {
-    try {
-      creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
-    } catch {
-      creds = null;
-    }
-  }
-  
-  // Initialize creds if not present
-  if (!creds) {
-    const { initAuthCreds } = require('@whiskeysockets/baileys');
-    creds = initAuthCreds();
-    fs.writeFileSync(credsPath, JSON.stringify(creds, null, 2));
-  }
-
-  // Create atomic key store (saves keys immediately, individually)
-  const keys = createAtomicKeyStore(accountId, sessionPath);
-
-  const state = { creds, keys };
-
-  // Track last creds save to database
-  let lastDbSave = 0;
-  const MIN_DB_SAVE_INTERVAL = 10000; // 10 seconds between DB saves
-
-  // Save creds to local file (always safe - just updates creds.json)
-  const saveCreds = async () => {
-    try {
-      fs.writeFileSync(credsPath, JSON.stringify(state.creds, null, 2));
-    } catch (e) {
-      logger.warn(`[Auth] Failed to save creds locally: ${e.message}`);
-    }
-  };
-
-  // Save full auth to database (ONLY when connection is stable)
-  const saveAllToDatabase = async (force = false) => {
-    const isReady = connectionReady.get(accountId);
-    const now = Date.now();
-    
-    // Only save if:
-    // 1. Force flag is true (stabilization save, shutdown)
-    // 2. OR connection is ready AND enough time has passed
-    if (!force && (!isReady || now - lastDbSave < MIN_DB_SAVE_INTERVAL)) {
-      return false;
-    }
-
-    try {
-      await saveAuthToDatabase(accountId, sessionPath, force);
-      lastDbSave = now;
-      return true;
-    } catch (e) {
-      logger.error(`[Auth] DB save failed: ${e.message}`);
-      return false;
-    }
-  };
-
-  return { state, saveCreds, saveAllToDatabase };
 }
 
 // ============================================================================
@@ -668,7 +410,7 @@ class WhatsAppManager {
     this.reconnectAttempts = new Map(); // accountId -> { count, lastAttempt }
     this.isShuttingDown = false;
     this.io = null;
-    this.authStates = new Map();    // accountId -> { state, saveCreds }
+    this.authStates = new Map();    // accountId -> { sessionPath, saveCreds }
 
     // Minimal metrics
     this.metrics = {
@@ -685,8 +427,25 @@ class WhatsAppManager {
     setInterval(() => this.cleanupDisconnectedAccounts(), 300000);
 
     // Refresh presence for all accounts (every 4 minutes)
-    // This ensures we stay "available" and continue receiving delivery receipts
     setInterval(() => this.refreshAllPresence(), 240000);
+    
+    // Periodic database sync for connected accounts (every 5 minutes)
+    // This ensures auth is always saved in case of crashes
+    setInterval(() => this.periodicAuthSync(), 300000);
+  }
+  
+  // Periodic sync of auth to database for all connected accounts
+  async periodicAuthSync() {
+    for (const [accountId, authState] of this.authStates.entries()) {
+      if (this.accountStatus.get(accountId) === 'ready' && authState?.sessionPath) {
+        try {
+          await saveAuthToDatabase(accountId, authState.sessionPath);
+          logger.debug(`[Auth] Periodic sync for ${accountId}`);
+        } catch (e) {
+          logger.warn(`[Auth] Periodic sync failed for ${accountId}: ${e.message}`);
+        }
+      }
+    }
   }
 
   // Refresh presence for all connected accounts to maintain delivery receipt capability
@@ -792,37 +551,31 @@ class WhatsAppManager {
       return null;
     }
 
+    const sessionPath = path.join('./wa-sessions-temp', accountId);
+
     try {
-      // STEP 1: Restore auth from database BEFORE creating socket
-      // This is critical - never connect without restoring first
-      // EXCEPTION: skipRestore=true during QR phase (restartRequired handling)
+      // STEP 1: Restore auth from database (unless skipRestore=true for QR cycling)
       if (!skipRestore) {
         const restoreResult = await restoreAuthFromDatabase(accountId);
-        
-        if (restoreResult.needsQR) {
+        if (!restoreResult.restored) {
           logger.info(`[Auth] Account ${accountId} needs QR scan`);
           this.accountStatus.set(accountId, 'needs_qr');
-          // Mark as QR in progress - local files are now VOLATILE
-          qrInProgress.add(accountId);
-        } else {
-          // Valid auth restored from DB - not in QR phase
-          qrInProgress.delete(accountId);
         }
       }
-      // If skipRestore=true, we're continuing an existing QR session
-      // qrInProgress state remains unchanged
 
-      // STEP 2: Create auth state from restored files
-      const { state, saveCreds, saveAllToDatabase } = await useDBAuthState(accountId);
-      this.authStates.set(accountId, { state, saveCreds, saveAllToDatabase });
+      // STEP 2: Use Baileys' official useMultiFileAuthState (proven, battle-tested)
+      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+      
+      // Store for periodic DB saves
+      this.authStates.set(accountId, { sessionPath, saveCreds });
 
       const { version } = await fetchLatestBaileysVersion();
       logger.info(`Using Baileys version: ${version.join('.')}`);
 
-      // Store for message retry (fixes "Waiting for this message" issue)
+      // Store for message retry
       const messageRetryMap = new Map();
 
-      // Per-account stable browser fingerprint (prevents cluster fingerprinting)
+      // Per-account stable browser fingerprint
       const browserFingerprint = getAccountBrowserFingerprint(accountId);
       logger.debug(`[Auth] Browser fingerprint for ${accountId}: ${browserFingerprint.join('/')}`);
 
@@ -930,7 +683,6 @@ class WhatsAppManager {
             profilePictureUrl = await sock.profilePictureUrl(userJid, 'image');
             logger.info(`[${accountId}] Profile picture fetched`);
           } catch (e) {
-            // User may not have a profile picture
             logger.debug(`[${accountId}] No profile picture available`);
           }
         }
@@ -946,45 +698,28 @@ class WhatsAppManager {
         this.accountStatus.set(accountId, 'ready');
         this.qrCodes.delete(accountId);
         this.reconnecting.delete(accountId);
-        this.reconnectAttempts.delete(accountId); // Reset backoff on successful connection
-        
-        // QR phase is complete - local state is now authoritative
-        qrInProgress.delete(accountId);
+        this.reconnectAttempts.delete(accountId);
 
         // =====================================================================
-        // MARK CONNECTION READY - Now safe to save auth to database
+        // STABILIZATION SAVE TO DATABASE - Critical for crash recovery
         // =====================================================================
-        connectionReady.set(accountId, true);
-        logger.debug(`[Auth] Connection marked READY for ${accountId}`);
-
-        // =====================================================================
-        // STABILIZATION SAVE - Mandatory first save after connection.open
-        // =====================================================================
-        // WHY THIS IS CRITICAL (do not remove or "optimize"):
-        // - Some Signal keys finalize only AFTER connection opens
-        // - History sync may create new pre-keys
-        // - Without this save, a crash would lose the finalized keys
-        // - This save also claims instance ownership in Supabase
-        // =====================================================================
-        const authState = this.authStates.get(accountId);
-        if (authState?.saveAllToDatabase) {
+        // Wait a moment for Signal keys to stabilize, then save to DB
+        setTimeout(async () => {
           try {
-            await authState.saveAllToDatabase(true); // Force immediate save
-            logger.info(`[Auth] ✅ Stabilization save complete for ${accountId}`);
+            const authState = this.authStates.get(accountId);
+            if (authState?.sessionPath) {
+              await saveAuthToDatabase(accountId, authState.sessionPath);
+              logger.info(`[Auth] ✅ Saved to database for ${accountId}`);
+            }
           } catch (e) {
-            logger.error(`[Auth] ❌ Stabilization save failed: ${e.message}`);
+            logger.error(`[Auth] DB save failed: ${e.message}`);
           }
-        }
+        }, 5000); // Wait 5 seconds for keys to stabilize
 
-        // =====================================================================
-        // PRESENCE UPDATE - Tell WhatsApp we're online for delivery receipts
-        // =====================================================================
-        // This is REQUIRED for receiving message delivery confirmations (double ticks)
-        // Without this, sent messages will show single tick even when delivered
-        // =====================================================================
+        // Tell WhatsApp we're online for delivery receipts
         try {
           await sock.sendPresenceUpdate('available');
-          logger.info(`[${accountId}] Presence set to 'available' for delivery receipts`);
+          logger.info(`[${accountId}] Presence set to 'available'`);
         } catch (e) {
           logger.warn(`[${accountId}] Failed to set presence: ${e.message}`);
         }
@@ -1007,15 +742,11 @@ class WhatsAppManager {
         const isConnectionReplaced = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced;
         
         // Special handling for restartRequired (515) - QR timeout or protocol restart
-        // This is NORMAL during QR scanning - don't spam reconnects
         const isRestartRequired = statusCode === 515 || statusCode === DisconnectReason.restartRequired;
 
         if (statusCode === DisconnectReason.loggedOut) {
           // User logged out - MUST clear all auth data
           logger.warn(`[Auth] Account ${accountId} logged out - clearing all auth`);
-          
-          // Clear QR in progress tracking
-          qrInProgress.delete(accountId);
           
           // Clear database auth
           await db.clearSessionData(accountId);
@@ -1037,11 +768,9 @@ class WhatsAppManager {
           this.reconnectAttempts.delete(accountId);
         } else if (isConnectionReplaced) {
           // connectionReplaced - another instance/device took over
-          // Use exponential backoff to prevent reconnection loops
           const attempts = this.reconnectAttempts.get(accountId) || { count: 0, lastAttempt: 0 };
           const now = Date.now();
           
-          // Reset attempts if last attempt was more than 5 minutes ago
           if (now - attempts.lastAttempt > 300000) {
             attempts.count = 0;
           }
@@ -1050,21 +779,19 @@ class WhatsAppManager {
           attempts.lastAttempt = now;
           this.reconnectAttempts.set(accountId, attempts);
           
-          // Exponential backoff: 10s, 30s, 60s, 120s, max 5 minutes
           const backoffMs = Math.min(10000 * Math.pow(2, attempts.count - 1), 300000);
           
           if (attempts.count > 5) {
-            // Too many connectionReplaced errors - stop reconnecting
-            logger.error(`Connection replaced too many times for ${accountId}. Check if WhatsApp Web is open elsewhere.`);
+            logger.error(`Connection replaced too many times for ${accountId}`);
             await db.updateAccount(accountId, {
               status: 'disconnected',
-              error_message: 'Connection replaced - WhatsApp may be open on another device/browser',
+              error_message: 'Connection replaced - WhatsApp may be open on another device',
               updated_at: new Date().toISOString()
             }).catch(() => {});
             this.accountStatus.set(accountId, 'disconnected');
             this.clients.delete(accountId);
           } else {
-            logger.info(`Connection replaced for ${accountId}. Waiting ${backoffMs/1000}s before attempt ${attempts.count}/5...`);
+            logger.info(`Connection replaced for ${accountId}. Waiting ${backoffMs/1000}s...`);
             this.accountStatus.set(accountId, 'reconnecting');
             
             setTimeout(async () => {
@@ -1078,54 +805,43 @@ class WhatsAppManager {
             }, backoffMs);
           }
         } else if (isRestartRequired) {
-          // =========================================================================
           // restartRequired (515) - Normal during QR scanning
-          // This is NOT an error - it's Baileys' way of cycling the QR code
-          //
-          // CRITICAL: If QR is in progress, DO NOT call restoreAuthFromDatabase()
-          // Local files contain in-progress handshake state that must be preserved.
-          // Use skipRestore=true to recreate socket without wiping local files.
-          // =========================================================================
-          const isQrPhase = qrInProgress.has(accountId);
-          logger.info(`[QR] Restart required for ${accountId} - QR in progress: ${isQrPhase}`);
+          // Don't wipe local files - they contain in-progress handshake
+          const currentStatus = this.accountStatus.get(accountId);
+          const isQrPhase = currentStatus === 'qr_ready' || currentStatus === 'needs_qr';
+          
+          logger.info(`[QR] Restart required for ${accountId} (QR phase: ${isQrPhase})`);
           this.accountStatus.set(accountId, 'qr_ready');
           
-          // Wait 5 seconds before generating new QR
           setTimeout(async () => {
             if (!this.isShuttingDown && !this.deletedAccounts.has(accountId)) {
-              const currentStatus = this.accountStatus.get(accountId);
-              // Only reconnect if still waiting for QR (not if already connected)
-              if (currentStatus !== 'ready') {
-                logger.info(`[QR] Generating new QR for ${accountId}...`);
+              const status = this.accountStatus.get(accountId);
+              if (status !== 'ready') {
+                logger.info(`[QR] Regenerating QR for ${accountId}...`);
                 try {
-                  // During QR phase: skipRestore=true to preserve volatile local files
-                  // After auth complete: skipRestore=false to restore from DB
-                  const skipRestore = qrInProgress.has(accountId);
-                  await this.startBaileysClient(accountId, skipRestore);
+                  // skipRestore=true preserves local handshake files
+                  await this.startBaileysClient(accountId, true);
                 } catch (err) {
-                  logger.error(`[QR] Failed to regenerate QR for ${accountId}:`, err.message);
+                  logger.error(`[QR] Failed for ${accountId}:`, err.message);
                   this.accountStatus.set(accountId, 'disconnected');
                 }
               }
             }
-          }, 5000);
+          }, 3000);
         } else if (shouldReconnect && !this.isShuttingDown) {
-          // Normal disconnect - try to reconnect after 3 seconds
+          // Normal disconnect - reconnect after delay
           this.accountStatus.set(accountId, 'reconnecting');
-          this.reconnectAttempts.delete(accountId); // Reset for normal reconnects
+          this.reconnectAttempts.delete(accountId);
           
           setTimeout(async () => {
-            // Don't reconnect if account was deleted or shutting down
             if (!this.isShuttingDown && !this.reconnecting.has(accountId) && !this.deletedAccounts.has(accountId)) {
-              logger.info(`Attempting reconnect for ${accountId}...`);
+              logger.info(`Reconnecting ${accountId}...`);
               try {
                 await this.startBaileysClient(accountId);
               } catch (err) {
                 logger.error(`Reconnect failed for ${accountId}:`, err.message);
                 this.accountStatus.set(accountId, 'disconnected');
               }
-            } else if (this.deletedAccounts.has(accountId)) {
-              logger.info(`Skipping reconnect - account ${accountId} was deleted`);
             }
           }, 3000);
         } else {
@@ -1150,8 +866,7 @@ class WhatsAppManager {
     // Keys are saved atomically as they're created
     sock.ev.on('messaging-history.set', async () => {
       logger.debug(`[Auth] History sync received for ${accountId}`);
-      // Note: Keys are already saved atomically by createAtomicKeyStore
-      // No need to gate or trigger saves here
+      // Keys are saved automatically by useMultiFileAuthState
     });
     
     // Contacts update - capture LID to phone number mappings
@@ -1848,8 +1563,6 @@ class WhatsAppManager {
     try {
       // Mark as deleted FIRST to prevent QR regeneration/reconnection
       this.deletedAccounts.add(accountId);
-      qrInProgress.delete(accountId); // Clear QR tracking
-      connectionReady.delete(accountId); // Clear connection state
       logger.info(`Marking account ${accountId} as deleted - stopping all activity`);
 
       await this.safeDisposeClient(accountId);
@@ -2047,33 +1760,30 @@ class WhatsAppManager {
 
     this.isShuttingDown = true;
     logger.info(`[Shutdown] Shutting down ${this.clients.size} client(s)...`);
-    logger.info(`[Shutdown] Instance ${INSTANCE_ID} releasing ownership...`);
 
-    // First, save all sessions with ownership release
-    // Note: We save with current instance ID - next startup will see stale ownership
-    // and take over after the staleness threshold (5 minutes)
+    // Save all sessions to database before closing
     const savePromises = [];
     for (const [accountId, authState] of this.authStates.entries()) {
-      if (authState?.saveAllToDatabase) {
-        logger.info(`[Shutdown] Final save for ${accountId}...`);
+      if (authState?.sessionPath) {
+        logger.info(`[Shutdown] Saving ${accountId}...`);
         savePromises.push(
-          authState.saveAllToDatabase(true).catch(err => {
-            logger.warn(`[Shutdown] Failed to save session for ${accountId}: ${err.message}`);
+          saveAuthToDatabase(accountId, authState.sessionPath).catch(err => {
+            logger.warn(`[Shutdown] Save failed for ${accountId}: ${err.message}`);
           })
         );
       }
     }
     
-    // Wait for all session saves to complete (with timeout)
+    // Wait for saves (with timeout)
     if (savePromises.length > 0) {
       await Promise.race([
         Promise.all(savePromises),
-        new Promise(resolve => setTimeout(resolve, 10000)) // 10s timeout
+        new Promise(resolve => setTimeout(resolve, 10000))
       ]);
       logger.info(`[Shutdown] Session saves completed`);
     }
 
-    // Then close all sockets
+    // Close all sockets
     for (const [accountId, sock] of this.clients.entries()) {
       try {
         sock.end(undefined);
