@@ -1036,11 +1036,11 @@ async function showApiKeyModal(accountId) {
     
     // Create modal HTML
     const modalHtml = `
-        <div class="modal-overlay" id="apiKeyModal" onclick="if(event.target === this) closeModal('apiKeyModal')">
-            <div class="modal" style="max-width: 600px;">
+        <div class="modal-overlay" id="apiKeyModal" onclick="if(event.target === this) closeModal('apiKeyModal')" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+            <div class="modal-dialog" style="max-width: 600px; width: 90%; background: var(--bg-card); border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
                 <div class="modal-header">
                     <h3><i class="fas fa-key"></i> API Key - ${accountName}</h3>
-                    <button class="modal-close" onclick="closeModal('apiKeyModal')">&times;</button>
+                    <button class="btn-close" onclick="closeModal('apiKeyModal')">&times;</button>
                 </div>
                 <div class="modal-body" style="padding: 20px;">
                     <div style="margin-bottom: 20px;">
