@@ -667,7 +667,8 @@ class WhatsAppManager {
         defaultQueryTimeoutMs: undefined,
         keepAliveIntervalMs: 30000,
         emitOwnEvents: true,
-        markOnlineOnConnect: false,
+        markOnlineOnConnect: true,  // Changed: Required for proper message delivery receipts
+        fireInitQueries: true,       // Added: Ensures proper handshake with WhatsApp
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
         // Message retry configuration - fixes encryption issues
@@ -1019,6 +1020,19 @@ class WhatsAppManager {
           }
         } catch (error) {
           logger.warn('Message update handler error:', error.message);
+        }
+      }
+    });
+
+    // Handle message receipt updates (delivery/read confirmations)
+    sock.ev.on('message-receipt.update', async (receipts) => {
+      for (const receipt of receipts) {
+        try {
+          const receiptType = receipt.receipt?.receiptTimestamp ? 'delivered' : 
+                             receipt.receipt?.readTimestamp ? 'read' : 'unknown';
+          logger.debug(`📨 Receipt update for ${receipt.key?.id?.slice(0, 15)}...: ${receiptType}`);
+        } catch (error) {
+          logger.warn('Message receipt handler error:', error.message);
         }
       }
     });
