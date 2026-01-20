@@ -391,6 +391,7 @@ async function saveAuthToDatabase(accountId, sessionPath, force = false) {
 
 /**
  * Create auth state wrapper with debounced saves
+ * CRITICAL: Must save BOTH creds AND keys to database
  */
 async function useDBAuthState(accountId) {
   const sessionPath = path.join('./wa-sessions-temp', accountId);
@@ -398,11 +399,11 @@ async function useDBAuthState(accountId) {
   // Use Baileys' built-in file auth state
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
-  // Debounce configuration
+  // Debounce configuration - more aggressive to catch key changes
   let saveTimeout = null;
   let lastSaveTime = 0;
-  const SAVE_DEBOUNCE_MS = 15000; // Wait 15s for activity to settle
-  const MIN_SAVE_INTERVAL_MS = 30000; // Min 30s between saves
+  const SAVE_DEBOUNCE_MS = 5000; // Reduced: Wait 5s for activity to settle (was 15s)
+  const MIN_SAVE_INTERVAL_MS = 10000; // Reduced: Min 10s between saves (was 30s)
 
   // Debounced save function
   const saveAllToDatabase = async (force = false) => {
@@ -410,6 +411,7 @@ async function useDBAuthState(accountId) {
       if (saveTimeout) clearTimeout(saveTimeout);
       saveTimeout = null;
       await saveAuthToDatabase(accountId, sessionPath, true);
+      lastSaveTime = Date.now();
       return;
     }
 
@@ -1044,7 +1046,7 @@ class WhatsAppManager {
       }
     });
 
-    // Incoming messages
+    // Incoming messages - also trigger key save since decryption updates keys
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
@@ -1054,6 +1056,12 @@ class WhatsAppManager {
         } catch (error) {
           logger.error(`Message handler error for ${accountId}:`, error);
         }
+      }
+      
+      // Trigger debounced save after processing messages (decryption changes keys)
+      const authState = this.authStates.get(accountId);
+      if (authState?.saveAllToDatabase) {
+        authState.saveAllToDatabase().catch(() => {});
       }
     });
 
@@ -1352,7 +1360,13 @@ class WhatsAppManager {
           sock.messageRetryMap.set(result.key.id, msgContent);
         }
       }
-      // Note: Session keys are saved via creds.update event when they change
+      
+      // CRITICAL: Trigger auth save after message send
+      // Message encryption may update Signal session keys
+      const authState = this.authStates.get(accountId);
+      if (authState?.saveAllToDatabase) {
+        authState.saveAllToDatabase().catch(() => {}); // Debounced, won't block
+      }
 
       await db.updateAccount(accountId, {
         last_active_at: new Date().toISOString()
