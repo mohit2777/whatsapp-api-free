@@ -168,7 +168,7 @@ const db = {
       };
 
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .insert([dataWithApiKey])
         .select();
 
@@ -201,7 +201,7 @@ const db = {
     return withRetry(async () => {
       // Explicitly select columns WITHOUT session_data (which is huge - 1-5MB each)
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .select('id, name, description, phone_number, status, metadata, created_at, updated_at')
         .order('created_at', { ascending: false });
 
@@ -230,7 +230,7 @@ const db = {
     try {
       // Exclude session_data to avoid huge payloads
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .select('id, name, description, phone_number, status, metadata, created_at, updated_at')
         .eq('id', id)
         .single();
@@ -263,7 +263,7 @@ const db = {
     
     try {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .select('id, name, phone_number, status')
         .eq('api_key', apiKey)
         .single();
@@ -290,7 +290,7 @@ const db = {
     const newApiKey = generateApiKey();
     
     const { data, error } = await supabase
-      .from('accounts')
+      .from('whatsapp_accounts')
       .update({ api_key: newApiKey, updated_at: new Date().toISOString() })
       .eq('id', accountId)
       .select('api_key');
@@ -308,7 +308,7 @@ const db = {
   // Get API key for an account (for dashboard display)
   async getApiKey(accountId) {
     const { data, error } = await supabase
-      .from('accounts')
+      .from('whatsapp_accounts')
       .select('api_key')
       .eq('id', accountId)
       .single();
@@ -320,7 +320,7 @@ const db = {
   async updateAccount(id, updates) {
     return withRetry(async () => {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .update(updates)
         .eq('id', id)
         .select();
@@ -344,7 +344,7 @@ const db = {
   async deleteAccount(id) {
     try {
       const { error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .delete()
         .eq('id', id);
 
@@ -373,7 +373,7 @@ const db = {
   async getSessionData(accountId) {
     try {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .select('session_data')
         .eq('id', accountId)
         .single();
@@ -389,7 +389,7 @@ const db = {
   async saveSessionData(accountId, sessionData) {
     try {
       const { error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .update({
           session_data: sessionData,
           last_session_saved: new Date().toISOString()
@@ -407,7 +407,7 @@ const db = {
   async clearSessionData(accountId) {
     try {
       const { error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .update({
           session_data: null,
           last_session_saved: null
@@ -693,7 +693,7 @@ const db = {
   async saveSessionData(accountId, sessionData) {
     return withRetry(async () => {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .update({
           session_data: sessionData,
           last_session_saved: new Date().toISOString(),
@@ -720,7 +720,7 @@ const db = {
   async getSessionData(accountId) {
     return withRetry(async () => {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .select('session_data')
         .eq('id', accountId)
         .single();
@@ -741,7 +741,7 @@ const db = {
   async clearSessionData(accountId) {
     try {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .update({
           session_data: null,
           last_session_saved: null,
@@ -773,7 +773,7 @@ const db = {
   async hasSessionData(accountId) {
     return withRetry(async () => {
       const { data, error } = await supabase
-        .from('accounts')
+        .from('whatsapp_accounts')
         .select('session_data, last_session_saved')
         .eq('id', accountId)
         .single();
