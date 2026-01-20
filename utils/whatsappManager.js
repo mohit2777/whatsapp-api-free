@@ -64,7 +64,7 @@ console.error = (...args) => {
 };
 // ============================================================================
 
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, jidDecode, proto, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, jidDecode, proto, generateWAMessageFromContent, makeInMemoryStore } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../config/database');
@@ -506,6 +506,7 @@ const rateLimiter = new AccountRateLimiter();
 class WhatsAppManager {
   constructor() {
     this.clients = new Map();       // accountId -> socket
+    this.stores = new Map();        // accountId -> in-memory store (for message status tracking)
     this.qrCodes = new Map();       // accountId -> qr data URL
     this.accountStatus = new Map(); // accountId -> status string
     this.reconnecting = new Set();
@@ -668,6 +669,10 @@ class WhatsAppManager {
       // Store for message retry (fixes "Waiting for this message" issue)
       const messageRetryMap = new Map();
 
+      // Create in-memory store for message status tracking (enables double tick)
+      const store = makeInMemoryStore({ logger: pino({ level: 'silent' }) });
+      this.stores.set(accountId, store);
+
       // Per-account stable browser fingerprint (prevents cluster fingerprinting)
       const browserFingerprint = getAccountBrowserFingerprint(accountId);
       logger.debug(`[Auth] Browser fingerprint for ${accountId}: ${browserFingerprint.join('/')}`);
@@ -692,7 +697,12 @@ class WhatsAppManager {
         // Message retry configuration - fixes encryption issues
         retryRequestDelayMs: 250,
         getMessage: async (key) => {
-          // Return cached message for retry
+          // First check the store for the message
+          if (store) {
+            const msg = await store.loadMessage(key.remoteJid, key.id);
+            if (msg) return msg.message;
+          }
+          // Fallback to retry map
           if (messageRetryMap.has(key.id)) {
             return messageRetryMap.get(key.id);
           }
@@ -700,6 +710,9 @@ class WhatsAppManager {
         },
         msgRetryCounterCache: messageRetryMap
       });
+
+      // Bind store to socket events (required for message status tracking)
+      store.bind(sock.ev);
 
       // Store messageRetryMap with the client for later use
       sock.messageRetryMap = messageRetryMap;
@@ -866,6 +879,7 @@ class WhatsAppManager {
           this.clients.delete(accountId);
           this.authStates.delete(accountId);
           this.reconnectAttempts.delete(accountId);
+          this.stores.delete(accountId); // Clean up in-memory store
         } else if (isConnectionReplaced) {
           // connectionReplaced - another instance/device took over
           // Use exponential backoff to prevent reconnection loops
@@ -1651,6 +1665,7 @@ class WhatsAppManager {
       this.accountStatus.delete(accountId);
       this.reconnecting.delete(accountId);
       this.qrAttempts.delete(accountId);
+      this.stores.delete(accountId); // Clean up in-memory store
 
       // Clear session files
       const sessionPath = path.join('./wa-sessions-temp', accountId);
