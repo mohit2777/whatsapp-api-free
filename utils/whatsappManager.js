@@ -1058,22 +1058,19 @@ class WhatsAppManager {
     // Credentials updated - save to database (GATED - won't save during crypto)
     sock.ev.on('creds.update', saveCreds);
 
-    // History sync - GATE saves during sync, then save after
+    // History sync - GATE saves during sync burst
     sock.ev.on('messaging-history.set', async () => {
       const gate = getAuthGate(accountId);
       gate.historySync = true;
       logger.debug(`[Auth] History sync started for ${accountId} - saves blocked`);
       
-      // Wait for history sync to settle, then allow saves
+      // Wait for history sync burst to settle, then unblock
+      // creds.update will trigger the actual save when ready
       setTimeout(() => {
         gate.historySync = false;
-        logger.debug(`[Auth] History sync complete for ${accountId} - saves allowed`);
-        
-        const authState = this.authStates.get(accountId);
-        if (authState?.saveAllToDatabase && canSaveAuth(accountId)) {
-          authState.saveAllToDatabase().catch(() => {});
-        }
-      }, 5000); // Wait 5s for history sync burst to complete
+        logger.debug(`[Auth] History sync complete for ${accountId} - saves unblocked`);
+        // Note: Don't trigger explicit save here - creds.update handles it
+      }, 5000); // 5s for history sync burst to complete
     });
     
     // Contacts update - capture LID to phone number mappings
@@ -1442,19 +1439,7 @@ class WhatsAppManager {
       // =========================================================================
       gate.sending = Math.max(0, gate.sending - 1);
       logger.debug(`[Auth] Send gate UNLOCKED for ${accountId} (sending: ${gate.sending})`);
-      
-      // Trigger delayed save now that we're idle (if no other sends in flight)
-      if (gate.sending === 0 && gate.ready) {
-        const authState = this.authStates.get(accountId);
-        if (authState?.saveAllToDatabase) {
-          // Schedule save after brief delay to ensure crypto is fully complete
-          setTimeout(() => {
-            if (canSaveAuth(accountId)) {
-              authState.saveAllToDatabase().catch(() => {});
-            }
-          }, 1000);
-        }
-      }
+      // Note: Don't trigger explicit save here - creds.update will fire if keys changed
     }
   }
 
@@ -1563,17 +1548,7 @@ class WhatsAppManager {
       // =========================================================================
       gate.sending = Math.max(0, gate.sending - 1);
       logger.debug(`[Auth] Send gate UNLOCKED for ${accountId} (sending: ${gate.sending})`);
-      
-      if (gate.sending === 0 && gate.ready) {
-        const authState = this.authStates.get(accountId);
-        if (authState?.saveAllToDatabase) {
-          setTimeout(() => {
-            if (canSaveAuth(accountId)) {
-              authState.saveAllToDatabase().catch(() => {});
-            }
-          }, 1000);
-        }
-      }
+      // Note: Don't trigger explicit save here - creds.update will fire if keys changed
     }
   }
 
