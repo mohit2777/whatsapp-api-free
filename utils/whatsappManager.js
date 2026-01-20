@@ -529,6 +529,24 @@ class WhatsAppManager {
 
     // Cleanup disconnected accounts (every 5 minutes)
     setInterval(() => this.cleanupDisconnectedAccounts(), 300000);
+
+    // Refresh presence for all accounts (every 4 minutes)
+    // This ensures we stay "available" and continue receiving delivery receipts
+    setInterval(() => this.refreshAllPresence(), 240000);
+  }
+
+  // Refresh presence for all connected accounts to maintain delivery receipt capability
+  async refreshAllPresence() {
+    for (const [accountId, sock] of this.clients) {
+      if (this.accountStatus.get(accountId) === 'ready' && sock) {
+        try {
+          await sock.sendPresenceUpdate('available');
+          logger.debug(`[${accountId}] Presence refreshed to 'available'`);
+        } catch (e) {
+          // Ignore errors - connection may be temporarily unstable
+        }
+      }
+    }
   }
 
   setSocketIO(io) {
@@ -787,6 +805,19 @@ class WhatsAppManager {
           } catch (e) {
             logger.error(`[Auth] ❌ Stabilization save failed: ${e.message}`);
           }
+        }
+
+        // =====================================================================
+        // PRESENCE UPDATE - Tell WhatsApp we're online for delivery receipts
+        // =====================================================================
+        // This is REQUIRED for receiving message delivery confirmations (double ticks)
+        // Without this, sent messages will show single tick even when delivered
+        // =====================================================================
+        try {
+          await sock.sendPresenceUpdate('available');
+          logger.info(`[${accountId}] Presence set to 'available' for delivery receipts`);
+        } catch (e) {
+          logger.warn(`[${accountId}] Failed to set presence: ${e.message}`);
         }
 
         this.emitToAll('ready', { accountId, phoneNumber });
