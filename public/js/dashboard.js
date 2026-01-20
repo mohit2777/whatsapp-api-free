@@ -1158,6 +1158,12 @@ async function regenerateApiKey(accountId) {
     }
 }
 
+// Make API key functions globally accessible for onclick handlers
+window.showApiKeyModal = showApiKeyModal;
+window.copyApiKey = copyApiKey;
+window.copyToClipboard = copyToClipboard;
+window.regenerateApiKey = regenerateApiKey;
+
 // Delete Account
 async function deleteAccount(accountId) {
     if (!confirm('Are you sure you want to delete this account?')) {
@@ -1635,10 +1641,17 @@ function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
         modal.classList.remove('active');
+        // Also handle the API Key modal which is dynamically created
+        if (modalId === 'apiKeyModal') {
+            modal.remove();
+        }
     } else {
         console.error('Modal not found for closing:', modalId);
     }
 }
+
+// Make closeModal globally accessible
+window.closeModal = closeModal;
 
 // Load Webhook Account Options
 function loadWebhookAccountOptions() {
