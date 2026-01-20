@@ -389,9 +389,30 @@ async function saveAuthToDatabase(accountId, sessionPath, force = false) {
   }
 }
 
+// ============================================================================
+// AUTH SAVE GATING - Prevent saves during cryptographic operations
+// ============================================================================
+// Signal sessions are destroyed when auth is saved mid-ratchet
+// These gates prevent that catastrophic failure
+// ============================================================================
+const authSaveGates = new Map(); // accountId -> { ready: bool, sending: number, historySync: bool }
+
+function getAuthGate(accountId) {
+  if (!authSaveGates.has(accountId)) {
+    authSaveGates.set(accountId, { ready: false, sending: 0, historySync: false });
+  }
+  return authSaveGates.get(accountId);
+}
+
+function canSaveAuth(accountId) {
+  const gate = getAuthGate(accountId);
+  // Only save when: connection is open AND no messages in flight AND no history sync
+  return gate.ready && gate.sending === 0 && !gate.historySync;
+}
+
 /**
- * Create auth state wrapper with debounced saves
- * CRITICAL: Must save BOTH creds AND keys to database
+ * Create auth state wrapper with GATED saves
+ * CRITICAL: Never save during cryptographic mutations (message send, history sync, ratchet)
  */
 async function useDBAuthState(accountId) {
   const sessionPath = path.join('./wa-sessions-temp', accountId);
@@ -399,19 +420,27 @@ async function useDBAuthState(accountId) {
   // Use Baileys' built-in file auth state
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
-  // Debounce configuration - more aggressive to catch key changes
+  // Debounce configuration
   let saveTimeout = null;
   let lastSaveTime = 0;
-  const SAVE_DEBOUNCE_MS = 5000; // Reduced: Wait 5s for activity to settle (was 15s)
-  const MIN_SAVE_INTERVAL_MS = 10000; // Reduced: Min 10s between saves (was 30s)
+  const SAVE_DEBOUNCE_MS = 3000; // Wait 3s for activity to settle
+  const MIN_SAVE_INTERVAL_MS = 5000; // Min 5s between saves
 
-  // Debounced save function
+  // Debounced save function - ONLY executes when gates allow
   const saveAllToDatabase = async (force = false) => {
+    // Force save bypasses gates (used on connection.open stabilization)
     if (force) {
       if (saveTimeout) clearTimeout(saveTimeout);
       saveTimeout = null;
       await saveAuthToDatabase(accountId, sessionPath, true);
       lastSaveTime = Date.now();
+      logger.debug(`[Auth] Forced save for ${accountId}`);
+      return;
+    }
+
+    // Check gates before scheduling
+    if (!canSaveAuth(accountId)) {
+      logger.debug(`[Auth] Save blocked for ${accountId} - crypto operation in progress`);
       return;
     }
 
@@ -419,6 +448,12 @@ async function useDBAuthState(accountId) {
     if (saveTimeout) clearTimeout(saveTimeout);
     
     saveTimeout = setTimeout(async () => {
+      // Re-check gates at execution time
+      if (!canSaveAuth(accountId)) {
+        logger.debug(`[Auth] Debounced save aborted for ${accountId} - crypto operation started`);
+        return;
+      }
+      
       const now = Date.now();
       if (now - lastSaveTime >= MIN_SAVE_INTERVAL_MS) {
         await saveAuthToDatabase(accountId, sessionPath, false);
@@ -427,10 +462,17 @@ async function useDBAuthState(accountId) {
     }, SAVE_DEBOUNCE_MS);
   };
 
-  // Wrap saveCreds to trigger database save
+  // Wrap saveCreds - GATED to prevent mid-ratchet saves
   const saveCredsAndDB = async () => {
+    // Always save to local files (Baileys needs this)
     await saveCreds();
-    await saveAllToDatabase();
+    
+    // Only trigger DB save if gates allow
+    if (canSaveAuth(accountId)) {
+      await saveAllToDatabase();
+    } else {
+      logger.debug(`[Auth] Creds saved locally but DB save blocked for ${accountId}`);
+    }
   };
 
   return { state, saveCreds: saveCredsAndDB, saveAllToDatabase };
@@ -823,6 +865,13 @@ class WhatsAppManager {
         qrInProgress.delete(accountId);
 
         // =====================================================================
+        // OPEN AUTH SAVE GATE - Now safe to save auth to database
+        // =====================================================================
+        const gate = getAuthGate(accountId);
+        gate.ready = true;
+        logger.debug(`[Auth] Save gate OPENED for ${accountId}`);
+
+        // =====================================================================
         // STABILIZATION SAVE - Mandatory first save after connection.open
         // =====================================================================
         // WHY THIS IS CRITICAL (do not remove or "optimize"):
@@ -1006,15 +1055,25 @@ class WhatsAppManager {
       }
     });
 
-    // Credentials updated - save to database (debounced)
+    // Credentials updated - save to database (GATED - won't save during crypto)
     sock.ev.on('creds.update', saveCreds);
 
-    // History sync - triggers debounced save (creates many Signal keys)
+    // History sync - GATE saves during sync, then save after
     sock.ev.on('messaging-history.set', async () => {
-      const authState = this.authStates.get(accountId);
-      if (authState?.saveAllToDatabase) {
-        authState.saveAllToDatabase().catch(() => {});
-      }
+      const gate = getAuthGate(accountId);
+      gate.historySync = true;
+      logger.debug(`[Auth] History sync started for ${accountId} - saves blocked`);
+      
+      // Wait for history sync to settle, then allow saves
+      setTimeout(() => {
+        gate.historySync = false;
+        logger.debug(`[Auth] History sync complete for ${accountId} - saves allowed`);
+        
+        const authState = this.authStates.get(accountId);
+        if (authState?.saveAllToDatabase && canSaveAuth(accountId)) {
+          authState.saveAllToDatabase().catch(() => {});
+        }
+      }, 5000); // Wait 5s for history sync burst to complete
     });
     
     // Contacts update - capture LID to phone number mappings
@@ -1046,7 +1105,7 @@ class WhatsAppManager {
       }
     });
 
-    // Incoming messages - also trigger key save since decryption updates keys
+    // Incoming messages - handle without triggering mid-decrypt saves
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
@@ -1057,12 +1116,7 @@ class WhatsAppManager {
           logger.error(`Message handler error for ${accountId}:`, error);
         }
       }
-      
-      // Trigger debounced save after processing messages (decryption changes keys)
-      const authState = this.authStates.get(accountId);
-      if (authState?.saveAllToDatabase) {
-        authState.saveAllToDatabase().catch(() => {});
-      }
+      // Note: Auth saves are handled by creds.update which is already gated
     });
 
     // Message status updates (sent, delivered, read)
@@ -1314,6 +1368,13 @@ class WhatsAppManager {
     if (status !== 'ready') throw new Error(`Client not ready: ${status}`);
 
     const jid = this.formatPhoneNumber(number);
+    
+    // =========================================================================
+    // GATE AUTH SAVES - Block DB writes during encryption
+    // =========================================================================
+    const gate = getAuthGate(accountId);
+    gate.sending++;
+    logger.debug(`[Auth] Send gate LOCKED for ${accountId} (sending: ${gate.sending})`);
 
     try {
       // Anti-ban: Wait for rate limit with jitter
@@ -1360,13 +1421,6 @@ class WhatsAppManager {
           sock.messageRetryMap.set(result.key.id, msgContent);
         }
       }
-      
-      // CRITICAL: Trigger auth save after message send
-      // Message encryption may update Signal session keys
-      const authState = this.authStates.get(accountId);
-      if (authState?.saveAllToDatabase) {
-        authState.saveAllToDatabase().catch(() => {}); // Debounced, won't block
-      }
 
       await db.updateAccount(accountId, {
         last_active_at: new Date().toISOString()
@@ -1382,6 +1436,25 @@ class WhatsAppManager {
     } catch (error) {
       this.metrics.messagesFailed++;
       throw error;
+    } finally {
+      // =========================================================================
+      // UNLOCK GATE - Allow auth saves again after encryption complete
+      // =========================================================================
+      gate.sending = Math.max(0, gate.sending - 1);
+      logger.debug(`[Auth] Send gate UNLOCKED for ${accountId} (sending: ${gate.sending})`);
+      
+      // Trigger delayed save now that we're idle (if no other sends in flight)
+      if (gate.sending === 0 && gate.ready) {
+        const authState = this.authStates.get(accountId);
+        if (authState?.saveAllToDatabase) {
+          // Schedule save after brief delay to ensure crypto is fully complete
+          setTimeout(() => {
+            if (canSaveAuth(accountId)) {
+              authState.saveAllToDatabase().catch(() => {});
+            }
+          }, 1000);
+        }
+      }
     }
   }
 
@@ -1392,77 +1465,116 @@ class WhatsAppManager {
     const status = this.accountStatus.get(accountId);
     if (status !== 'ready') throw new Error(`Client not ready: ${status}`);
 
-    let base64Data = media.data || '';
-    let mimetype = media.mimetype || '';
-    let filename = media.filename || '';
+    // =========================================================================
+    // GATE AUTH SAVES - Block DB writes during encryption
+    // =========================================================================
+    const gate = getAuthGate(accountId);
+    gate.sending++;
+    logger.debug(`[Auth] Send gate LOCKED for ${accountId} (sending: ${gate.sending})`);
 
-    // Fetch from URL if needed
-    if (media.url && !base64Data) {
-      const response = await axios.get(media.url, {
-        responseType: 'arraybuffer',
-        timeout: 30000,
-        maxContentLength: 16 * 1024 * 1024
-      });
+    try {
+      let base64Data = media.data || '';
+      let mimetype = media.mimetype || '';
+      let filename = media.filename || '';
 
-      base64Data = Buffer.from(response.data).toString('base64');
-      mimetype = mimetype || response.headers['content-type'] || 'application/octet-stream';
+      // Fetch from URL if needed
+      if (media.url && !base64Data) {
+        const response = await axios.get(media.url, {
+          responseType: 'arraybuffer',
+          timeout: 30000,
+          maxContentLength: 16 * 1024 * 1024
+        });
 
-      if (!filename) {
+        base64Data = Buffer.from(response.data).toString('base64');
+        mimetype = mimetype || response.headers['content-type'] || 'application/octet-stream';
+
+        if (!filename) {
+          try {
+            filename = new URL(media.url).pathname.split('/').pop() || '';
+          } catch {}
+        }
+      }
+
+      // Normalize base64
+      if (base64Data && /^data:[^;]+;base64,/i.test(base64Data)) {
+        base64Data = base64Data.replace(/^data:[^;]+;base64,/i, '');
+      }
+
+      if (!mimetype) throw new Error('mimetype required');
+
+      const jid = this.formatPhoneNumber(number);
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      // Anti-ban: Wait for rate limit with jitter
+      await rateLimiter.waitWithJitter(accountId);
+
+      // Show typing indicator with jitter (don't fail media send on presence errors)
+      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 1500;
+      const typingJitter = Math.floor(Math.random() * 500); // 0-500ms random
+      if (typingDelay > 0) {
         try {
-          filename = new URL(media.url).pathname.split('/').pop() || '';
-        } catch {}
+          await sock.presenceSubscribe(jid);
+          await sock.sendPresenceUpdate('composing', jid);
+          await new Promise(resolve => setTimeout(resolve, typingDelay + typingJitter));
+          await sock.sendPresenceUpdate('paused', jid);
+        } catch (e) { /* ignore presence errors */ }
+      }
+
+      // Determine message type based on mimetype
+      let messageContent;
+      if (mimetype.startsWith('image/')) {
+        messageContent = { image: buffer, caption, mimetype };
+      } else if (mimetype.startsWith('video/')) {
+        messageContent = { video: buffer, caption, mimetype };
+      } else if (mimetype.startsWith('audio/')) {
+        messageContent = { audio: buffer, mimetype, ptt: mimetype.includes('ogg') };
+      } else {
+        messageContent = { document: buffer, mimetype, fileName: filename || 'file' };
+      }
+
+      const result = await sock.sendMessage(jid, messageContent);
+
+      // Store in global store for retry support
+      if (result?.key?.id) {
+        if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
+          const oldestKey = globalMessageStore.keys().next().value;
+          globalMessageStore.delete(oldestKey);
+        }
+        globalMessageStore.set(result.key.id, {
+          message: messageContent,
+          timestamp: Date.now(),
+          accountId
+        });
+      }
+
+      // Record message for rate limiting
+      rateLimiter.recordMessage(accountId);
+
+      this.metrics.messagesProcessed++;
+
+      return {
+        success: true,
+        messageId: result.key?.id,
+        timestamp: Math.floor(Date.now() / 1000)
+      };
+    } finally {
+      // =========================================================================
+      // UNLOCK GATE - Allow auth saves again after encryption complete
+      // =========================================================================
+      gate.sending = Math.max(0, gate.sending - 1);
+      logger.debug(`[Auth] Send gate UNLOCKED for ${accountId} (sending: ${gate.sending})`);
+      
+      if (gate.sending === 0 && gate.ready) {
+        const authState = this.authStates.get(accountId);
+        if (authState?.saveAllToDatabase) {
+          setTimeout(() => {
+            if (canSaveAuth(accountId)) {
+              authState.saveAllToDatabase().catch(() => {});
+            }
+          }, 1000);
+        }
       }
     }
-
-    // Normalize base64
-    if (base64Data && /^data:[^;]+;base64,/i.test(base64Data)) {
-      base64Data = base64Data.replace(/^data:[^;]+;base64,/i, '');
-    }
-
-    if (!mimetype) throw new Error('mimetype required');
-
-    const jid = this.formatPhoneNumber(number);
-    const buffer = Buffer.from(base64Data, 'base64');
-
-    // Anti-ban: Wait for rate limit with jitter
-    await rateLimiter.waitWithJitter(accountId);
-
-    // Show typing indicator with jitter (don't fail media send on presence errors)
-    const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 1500;
-    const typingJitter = Math.floor(Math.random() * 500); // 0-500ms random
-    if (typingDelay > 0) {
-      try {
-        await sock.presenceSubscribe(jid);
-        await sock.sendPresenceUpdate('composing', jid);
-        await new Promise(resolve => setTimeout(resolve, typingDelay + typingJitter));
-        await sock.sendPresenceUpdate('paused', jid);
-      } catch (e) { /* ignore presence errors */ }
-    }
-
-    // Determine message type based on mimetype
-    let messageContent;
-    if (mimetype.startsWith('image/')) {
-      messageContent = { image: buffer, caption, mimetype };
-    } else if (mimetype.startsWith('video/')) {
-      messageContent = { video: buffer, caption, mimetype };
-    } else if (mimetype.startsWith('audio/')) {
-      messageContent = { audio: buffer, mimetype, ptt: mimetype.includes('ogg') };
-    } else {
-      messageContent = { document: buffer, mimetype, fileName: filename || 'file' };
-    }
-
-    const result = await sock.sendMessage(jid, messageContent);
-
-    // Record message for rate limiting
-    rateLimiter.recordMessage(accountId);
-
-    this.metrics.messagesProcessed++;
-
-    return {
-      success: true,
-      messageId: result.key?.id,
-      timestamp: Math.floor(Date.now() / 1000)
-    };
   }
 
   /**
@@ -1704,6 +1816,7 @@ class WhatsAppManager {
       // Mark as deleted FIRST to prevent QR regeneration/reconnection
       this.deletedAccounts.add(accountId);
       qrInProgress.delete(accountId); // Clear QR tracking
+      authSaveGates.delete(accountId); // Clear auth gates
       logger.info(`Marking account ${accountId} as deleted - stopping all activity`);
 
       await this.safeDisposeClient(accountId);
