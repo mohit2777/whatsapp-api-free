@@ -154,6 +154,40 @@ logger.info(`[Instance] ID: ${INSTANCE_ID}`);
 // Connection locks - prevent concurrent connections to same account
 const connectionLocks = new Map(); // accountId -> { timestamp, instanceId }
 
+// ANTI-BAN: Duplicate message detection
+// Prevents sending identical messages to same recipient in short period
+const recentMessageHashes = new Map(); // key: `${accountId}:${jid}:${msgHash}` -> timestamp
+const DUPLICATE_WINDOW_MS = 60000; // 60 seconds
+const MAX_MESSAGE_HASHES = 10000; // Prevent unbounded growth
+
+/**
+ * Check if this is a duplicate message (same content to same recipient)
+ * @returns {boolean} true if duplicate, false if allowed
+ */
+function isDuplicateMessage(accountId, jid, message) {
+  const msgHash = crypto.createHash('sha256').update(message).digest('hex').slice(0, 16);
+  const key = `${accountId}:${jid}:${msgHash}`;
+  
+  const lastSent = recentMessageHashes.get(key);
+  if (lastSent && (Date.now() - lastSent) < DUPLICATE_WINDOW_MS) {
+    return true; // Duplicate!
+  }
+  
+  // Clean old entries if map gets too large
+  if (recentMessageHashes.size >= MAX_MESSAGE_HASHES) {
+    const now = Date.now();
+    for (const [k, ts] of recentMessageHashes) {
+      if (now - ts > DUPLICATE_WINDOW_MS) {
+        recentMessageHashes.delete(k);
+      }
+    }
+  }
+  
+  // Record this message
+  recentMessageHashes.set(key, Date.now());
+  return false;
+}
+
 /**
  * Generate stable per-account browser fingerprint
  * CRITICAL: Each account MUST have a unique fingerprint to avoid detection
@@ -634,8 +668,9 @@ class WhatsAppManager {
     const existingLock = connectionLocks.get(accountId);
     if (existingLock && existingLock.instanceId !== INSTANCE_ID) {
       const lockAge = Date.now() - existingLock.timestamp;
-      // Lock expires after 5 minutes (in case instance crashed)
-      if (lockAge < 300000) {
+      // Lock expires after 15 minutes (in case instance crashed)
+      // Extended from 5 min to 15 min to prevent dual-connection detection
+      if (lockAge < 900000) {
         logger.warn(`[Auth] Account ${accountId} locked by another instance (${existingLock.instanceId}). Waiting...`);
         throw new Error('Account is connected from another instance');
       }
@@ -1296,6 +1331,12 @@ class WhatsAppManager {
     if (!this.clients.has(accountId)) throw new Error('Client not found');
 
     const jid = this.formatPhoneNumber(number);
+
+    // ANTI-BAN: Check for duplicate message (same content to same recipient within 60s)
+    if (isDuplicateMessage(accountId, jid, message)) {
+      logger.warn(`[Anti-Ban] Blocked duplicate message to ${jid.split('@')[0]} within 60s window`);
+      throw new Error('Duplicate message blocked - same content sent to this recipient within 60 seconds');
+    }
 
     try {
       // Anti-ban: Wait for rate limit with jitter
