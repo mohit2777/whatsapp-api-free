@@ -1633,3 +1633,224 @@ input:checked + .slider:before {
     color: white;
 }
 
+/* ============================================
+   API DOCS VIEW STYLES
+   ============================================ */
+
+#apiDocsView .docs-section {
+    margin-bottom: 40px;
+    padding-bottom: 30px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#apiDocsView .docs-section:last-child {
+    border-bottom: none;
+}
+
+#apiDocsView .docs-title {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--primary);
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+#apiDocsView .docs-title i {
+    font-size: 1.1rem;
+}
+
+#apiDocsView .docs-endpoint {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 15px 0;
+    padding: 12px 15px;
+    background: var(--bg-card-hover);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+#apiDocsView .docs-endpoint .method {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#apiDocsView .docs-endpoint .method.post {
+    background: linear-gradient(135deg, #4ade80, #22c55e);
+    color: white;
+}
+
+#apiDocsView .docs-endpoint .method.get {
+    background: linear-gradient(135deg, #60a5fa, #3b82f6);
+    color: white;
+}
+
+#apiDocsView .docs-endpoint code {
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+#apiDocsView .docs-code-block {
+    margin: 15px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+}
+
+#apiDocsView .code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+}
+
+#apiDocsView .code-lang {
+    font-size: 12px;
+    font-weight: 600;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#apiDocsView .btn-copy {
+    background: transparent;
+    border: 1px solid #475569;
+    color: #94a3b8;
+    padding: 6px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+
+#apiDocsView .btn-copy:hover {
+    background: #334155;
+    color: #f1f5f9;
+    border-color: #64748b;
+}
+
+#apiDocsView .btn-copy.copied {
+    background: #22c55e;
+    border-color: #22c55e;
+    color: white;
+}
+
+#apiDocsView .docs-code-block pre {
+    margin: 0;
+    padding: 20px;
+    background: #0f172a;
+    overflow-x: auto;
+}
+
+#apiDocsView .docs-code-block code {
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #e2e8f0;
+    white-space: pre;
+}
+
+#apiDocsView .docs-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 15px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
+#apiDocsView .docs-table th,
+#apiDocsView .docs-table td {
+    padding: 14px 18px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#apiDocsView .docs-table th {
+    background: var(--bg-card-hover);
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#apiDocsView .docs-table td {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+#apiDocsView .docs-table td code {
+    background: rgba(76, 175, 80, 0.1);
+    color: var(--primary);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+#apiDocsView .docs-table tr:last-child td {
+    border-bottom: none;
+}
+
+#apiDocsView .docs-table tr:hover td {
+    background: var(--bg-card-hover);
+}
+
+#apiDocsView .docs-tester {
+    background: var(--bg-card-hover);
+    padding: 25px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+
+#apiDocsView .badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+#apiDocsView .badge.error {
+    background: rgba(239, 83, 80, 0.15);
+    color: #ef5350;
+}
+
+#apiDocsView .badge.warning {
+    background: rgba(255, 167, 38, 0.15);
+    color: #ffa726;
+}
+
+#apiDocsView .badge.success {
+    background: rgba(102, 187, 106, 0.15);
+    color: #66bb6a;
+}
+
+/* Make sure code blocks are responsive */
+@media (max-width: 768px) {
+    #apiDocsView .docs-code-block pre {
+        padding: 15px;
+    }
+    
+    #apiDocsView .docs-code-block code {
+        font-size: 11px;
+    }
+    
+    #apiDocsView .docs-table th,
+    #apiDocsView .docs-table td {
+        padding: 10px 12px;
+        font-size: 12px;
+    }
+}
+

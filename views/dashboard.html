@@ -231,6 +231,453 @@
                     </div>
                 </div>
 
+                <!-- API Docs View (Hidden by default) -->
+                <div id="apiDocsView" style="display: none;">
+                    <div class="cyber-card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-book"></i> API Documentation</h2>
+                            <p class="card-subtitle">Complete guide to integrate with WhatsApp Multi-Automation API</p>
+                        </div>
+                        <div style="padding: 20px;">
+                            
+                            <!-- Quick Start -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-rocket"></i> Quick Start</h3>
+                                <p>All API requests require authentication using an API key. Get your API key from the account details in the dashboard.</p>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">Headers</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>Content-Type: application/json
+X-API-Key: wak_your_api_key_here</code></pre>
+                                </div>
+                            </div>
+
+                            <!-- Send Text Message -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-comment"></i> Send Text Message</h3>
+                                <div class="docs-endpoint">
+                                    <span class="method post">POST</span>
+                                    <code>/api/send</code>
+                                </div>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">cURL</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>curl -X POST "https://your-domain.com/api/send" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: wak_your_api_key" \
+  -d '{
+    "number": "919876543210",
+    "message": "Hello from WhatsApp API!"
+  }'</code></pre>
+                                </div>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">JavaScript (fetch)</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>const response = await fetch('https://your-domain.com/api/send', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'wak_your_api_key'
+  },
+  body: JSON.stringify({
+    number: '919876543210',
+    message: 'Hello from WhatsApp API!'
+  })
+});
+
+const result = await response.json();
+console.log(result);</code></pre>
+                                </div>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">Python</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>import requests
+
+response = requests.post(
+    'https://your-domain.com/api/send',
+    headers={
+        'Content-Type': 'application/json',
+        'X-API-Key': 'wak_your_api_key'
+    },
+    json={
+        'number': '919876543210',
+        'message': 'Hello from WhatsApp API!'
+    }
+)
+
+print(response.json())</code></pre>
+                                </div>
+                            </div>
+
+                            <!-- Send Media - Base64 -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-image"></i> Send Media (Base64)</h3>
+                                <p>Send images, videos, documents, or audio files using Base64 encoded data.</p>
+                                <div class="docs-endpoint">
+                                    <span class="method post">POST</span>
+                                    <code>/api/send-media</code>
+                                </div>
+                                
+                                <h4 style="margin: 15px 0 10px; color: var(--primary);">Image Example</h4>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">cURL</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>curl -X POST "https://your-domain.com/api/send-media" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: wak_your_api_key" \
+  -d '{
+    "number": "919876543210",
+    "caption": "Check out this image!",
+    "media": {
+      "data": "/9j/4AAQSkZJRgABAQEASABIAAD...",
+      "mimetype": "image/jpeg",
+      "filename": "photo.jpg"
+    }
+  }'</code></pre>
+                                </div>
+
+                                <h4 style="margin: 15px 0 10px; color: var(--primary);">JavaScript - File to Base64</h4>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">JavaScript (Browser)</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>// Convert file input to Base64 and send
+async function sendMediaFromFile(file) {
+  // Read file as Base64
+  const base64 = await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // Remove "data:image/jpeg;base64," prefix
+      const base64Data = reader.result.split(',')[1];
+      resolve(base64Data);
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const response = await fetch('https://your-domain.com/api/send-media', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': 'wak_your_api_key'
+    },
+    body: JSON.stringify({
+      number: '919876543210',
+      caption: 'Sent from browser!',
+      media: {
+        data: base64,
+        mimetype: file.type,
+        filename: file.name
+      }
+    })
+  });
+
+  return response.json();
+}
+
+// Usage with file input
+const fileInput = document.querySelector('input[type="file"]');
+fileInput.addEventListener('change', (e) => {
+  sendMediaFromFile(e.target.files[0]);
+});</code></pre>
+                                </div>
+
+                                <h4 style="margin: 15px 0 10px; color: var(--primary);">Node.js - File to Base64</h4>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">Node.js</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>const fs = require('fs');
+const path = require('path');
+
+async function sendMediaFile(filePath, number, caption) {
+  // Read file and convert to Base64
+  const fileBuffer = fs.readFileSync(filePath);
+  const base64Data = fileBuffer.toString('base64');
+  
+  // Determine mimetype from extension
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.mp4': 'video/mp4',
+    '.mp3': 'audio/mpeg',
+    '.ogg': 'audio/ogg',
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  };
+  
+  const response = await fetch('https://your-domain.com/api/send-media', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': 'wak_your_api_key'
+    },
+    body: JSON.stringify({
+      number: number,
+      caption: caption,
+      media: {
+        data: base64Data,
+        mimetype: mimeTypes[ext] || 'application/octet-stream',
+        filename: path.basename(filePath)
+      }
+    })
+  });
+
+  return response.json();
+}
+
+// Usage
+sendMediaFile('./invoice.pdf', '919876543210', 'Here is your invoice')
+  .then(console.log);</code></pre>
+                                </div>
+
+                                <h4 style="margin: 15px 0 10px; color: var(--primary);">Python - File to Base64</h4>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">Python</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>import base64
+import mimetypes
+import requests
+from pathlib import Path
+
+def send_media_file(file_path, number, caption, api_key):
+    # Read and encode file
+    with open(file_path, 'rb') as f:
+        base64_data = base64.b64encode(f.read()).decode('utf-8')
+    
+    # Get mimetype
+    mimetype, _ = mimetypes.guess_type(file_path)
+    filename = Path(file_path).name
+    
+    response = requests.post(
+        'https://your-domain.com/api/send-media',
+        headers={
+            'Content-Type': 'application/json',
+            'X-API-Key': api_key
+        },
+        json={
+            'number': number,
+            'caption': caption,
+            'media': {
+                'data': base64_data,
+                'mimetype': mimetype or 'application/octet-stream',
+                'filename': filename
+            }
+        }
+    )
+    
+    return response.json()
+
+# Usage
+result = send_media_file(
+    './photo.jpg',
+    '919876543210',
+    'Check this out!',
+    'wak_your_api_key'
+)
+print(result)</code></pre>
+                                </div>
+                            </div>
+
+                            <!-- Send Media - URL -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-link"></i> Send Media (URL)</h3>
+                                <p>Send media directly from a public URL. The server will download and forward it.</p>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">cURL</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>curl -X POST "https://your-domain.com/api/send-media" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: wak_your_api_key" \
+  -d '{
+    "number": "919876543210",
+    "caption": "Image from URL",
+    "media": {
+      "url": "https://example.com/image.jpg"
+    }
+  }'</code></pre>
+                                </div>
+                            </div>
+
+                            <!-- Supported Media Types -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-file-alt"></i> Supported Media Types</h3>
+                                <table class="docs-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Type</th>
+                                            <th>MIME Types</th>
+                                            <th>Max Size</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><i class="fas fa-image" style="color: #4ade80;"></i> Images</td>
+                                            <td><code>image/jpeg</code>, <code>image/png</code>, <code>image/gif</code>, <code>image/webp</code></td>
+                                            <td>16 MB</td>
+                                        </tr>
+                                        <tr>
+                                            <td><i class="fas fa-video" style="color: #60a5fa;"></i> Videos</td>
+                                            <td><code>video/mp4</code>, <code>video/3gpp</code>, <code>video/quicktime</code></td>
+                                            <td>16 MB</td>
+                                        </tr>
+                                        <tr>
+                                            <td><i class="fas fa-music" style="color: #f472b6;"></i> Audio</td>
+                                            <td><code>audio/mpeg</code>, <code>audio/ogg</code>, <code>audio/wav</code>, <code>audio/aac</code></td>
+                                            <td>16 MB</td>
+                                        </tr>
+                                        <tr>
+                                            <td><i class="fas fa-file-pdf" style="color: #fb923c;"></i> Documents</td>
+                                            <td><code>application/pdf</code>, <code>application/msword</code>, <code>application/vnd.ms-excel</code>, etc.</td>
+                                            <td>16 MB</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Webhooks -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-bolt"></i> Webhooks</h3>
+                                <p>Receive real-time notifications when messages arrive or are delivered.</p>
+                                
+                                <h4 style="margin: 15px 0 10px; color: var(--primary);">Incoming Message Payload</h4>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">JSON</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>{
+  "event": "message",
+  "account_id": "uuid-of-account",
+  "direction": "incoming",
+  "message_id": "3EB0ABC123...",
+  "sender": "919876543210",
+  "recipient": "918765432109",
+  "message": "Hello!",
+  "type": "text",
+  "timestamp": 1705747200,
+  "is_group": false,
+  "created_at": "2026-01-20T12:00:00.000Z"
+}</code></pre>
+                                </div>
+
+                                <h4 style="margin: 15px 0 10px; color: var(--primary);">Delivery Receipt Payload</h4>
+                                <div class="docs-code-block">
+                                    <div class="code-header">
+                                        <span class="code-lang">JSON</span>
+                                        <button class="btn-copy" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                    </div>
+                                    <pre><code>{
+  "event": "message_ack",
+  "account_id": "uuid-of-account",
+  "message_id": "3EB0ABC123...",
+  "recipient": "919876543210@s.whatsapp.net",
+  "ack": 3,
+  "ack_name": "delivered",
+  "timestamp": 1705747200
+}
+
+// ack values:
+// 1 = pending (clock icon)
+// 2 = sent (single tick)
+// 3 = delivered (double tick)
+// 4 = read (blue ticks)</code></pre>
+                                </div>
+                            </div>
+
+                            <!-- Try It Yourself -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-flask"></i> Try It Yourself</h3>
+                                <p>Use this interactive tester to send a message directly from the docs.</p>
+                                <div class="docs-tester">
+                                    <div class="form-group">
+                                        <label>API Key</label>
+                                        <input type="text" class="cyber-input" id="testApiKey" placeholder="wak_your_api_key">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Phone Number</label>
+                                        <input type="text" class="cyber-input" id="testPhone" placeholder="919876543210">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Message</label>
+                                        <textarea class="cyber-input" id="testMessage" placeholder="Hello from API Docs!"></textarea>
+                                    </div>
+                                    <button class="btn-cyber" id="runApiTest" style="width: 100%;">
+                                        <i class="fas fa-paper-plane"></i> Send Test Message
+                                    </button>
+                                    <div id="apiTestResult" style="display: none; margin-top: 15px;">
+                                        <div class="code-header">
+                                            <span class="code-lang">Response</span>
+                                        </div>
+                                        <pre id="apiTestOutput" style="background: #0f172a; color: #4ade80; padding: 15px; border-radius: 8px; overflow-x: auto;"></pre>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Error Codes -->
+                            <div class="docs-section">
+                                <h3 class="docs-title"><i class="fas fa-exclamation-triangle"></i> Error Codes</h3>
+                                <table class="docs-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Code</th>
+                                            <th>Description</th>
+                                            <th>Solution</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><span class="badge error">400</span></td>
+                                            <td>Bad Request</td>
+                                            <td>Check your JSON payload for missing fields</td>
+                                        </tr>
+                                        <tr>
+                                            <td><span class="badge error">401</span></td>
+                                            <td>Unauthorized</td>
+                                            <td>Invalid or missing API key</td>
+                                        </tr>
+                                        <tr>
+                                            <td><span class="badge error">404</span></td>
+                                            <td>Account Not Found</td>
+                                            <td>API key doesn't match any account</td>
+                                        </tr>
+                                        <tr>
+                                            <td><span class="badge warning">428</span></td>
+                                            <td>Connection Closed</td>
+                                            <td>WhatsApp disconnected, wait for reconnect</td>
+                                        </tr>
+                                        <tr>
+                                            <td><span class="badge error">500</span></td>
+                                            <td>Server Error</td>
+                                            <td>Internal error, check logs or retry</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </main>
     </div>
