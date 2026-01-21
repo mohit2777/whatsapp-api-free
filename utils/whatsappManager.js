@@ -82,6 +82,12 @@ const chatbotManager = require('./chatbot');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
+const NodeCache = require('node-cache');
+
+// CRITICAL FIX: Message retry counter cache (separate from message store!)
+// This tracks how many times each message has been retried for encryption
+// TTL prevents memory leaks, stdTTL is in seconds
+const msgRetryCounterCache = new NodeCache({ stdTTL: 600, checkperiod: 60 }); // 10 min TTL
 
 // LID to Phone Number mapping cache (in-memory with size limit)
 const lidPhoneCache = new Map();
@@ -700,9 +706,6 @@ class WhatsAppManager {
       const { version } = await fetchLatestBaileysVersion();
       logger.info(`Using Baileys version: ${version.join('.')}`);
 
-      // Store for message retry
-      const messageRetryMap = new Map();
-
       // Per-account stable browser fingerprint
       const browserFingerprint = getAccountBrowserFingerprint(accountId);
       logger.debug(`[Auth] Browser fingerprint for ${accountId}: ${browserFingerprint.join('/')}`);
@@ -725,9 +728,12 @@ class WhatsAppManager {
         fireInitQueries: true,       // Added: Ensures proper handshake with WhatsApp
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
-        // Message retry configuration - fixes encryption issues
+        // Message retry configuration - fixes "Waiting for this message" issue
+        // CRITICAL: Use NodeCache for retry counter (tracks retry attempts, not messages!)
+        msgRetryCounterCache: msgRetryCounterCache,
         // Anti-ban: Increased delay to prevent rapid-fire retry loops
-        retryRequestDelayMs: 2000,
+        retryRequestDelayMs: 350, // Match Evolution API's setting
+        maxMsgRetryCount: 4,      // Match Evolution API's setting
         getMessage: async (key) => {
           // Check global message store first (persists across reconnects)
           if (globalMessageStore.has(key.id)) {
@@ -735,20 +741,11 @@ class WhatsAppManager {
             logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in store`);
             return stored.message;
           }
-          // Fallback to per-socket retry map
-          if (messageRetryMap.has(key.id)) {
-            logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in retry map`);
-            return messageRetryMap.get(key.id);
-          }
           // Return undefined to signal message not found (don't return empty message!)
           logger.warn(`[getMessage] Message ${key.id?.slice(0, 15)}... not found for retry`);
           return undefined;
-        },
-        msgRetryCounterCache: messageRetryMap
+        }
       });
-
-      // Store messageRetryMap with the client for later use
-      sock.messageRetryMap = messageRetryMap;
 
       this.clients.set(accountId, sock);
       this.accountStatus.set(accountId, 'initializing');
@@ -1076,6 +1073,22 @@ class WhatsAppManager {
 
       for (const message of messages) {
         try {
+          // CRITICAL FIX: Store ALL incoming messages for retry support
+          // This fixes "Waiting for this message" when replying to received messages
+          if (message.key?.id && message.message) {
+            // Evict oldest if store is full
+            if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
+              const oldestKey = globalMessageStore.keys().next().value;
+              globalMessageStore.delete(oldestKey);
+            }
+            globalMessageStore.set(message.key.id, {
+              message: message.message,
+              timestamp: Date.now(),
+              accountId
+            });
+            logger.debug(`[MsgStore] Stored incoming message ${message.key.id?.slice(0, 15)}...`);
+          }
+          
           await this.handleIncomingMessage(sock, accountId, message);
         } catch (error) {
           logger.error(`Message handler error for ${accountId}:`, error);
@@ -1396,11 +1409,6 @@ class WhatsAppManager {
           timestamp: Date.now(),
           accountId
         });
-        
-        // Also store in per-socket map
-        if (sock.messageRetryMap) {
-          sock.messageRetryMap.set(result.key.id, msgContent);
-        }
       }
 
       await db.updateAccount(accountId, {
@@ -1620,10 +1628,17 @@ class WhatsAppManager {
     
     rateLimiter.recordMessage(accountId);
     
-    // Cache for retry
-    if (sock.messageRetryMap && result?.key?.id) {
-      sock.messageRetryMap.set(result.key.id, { text: messageText });
-      setTimeout(() => sock.messageRetryMap?.delete(result.key.id), 5 * 60 * 1000);
+    // Store for retry support
+    if (result?.key?.id) {
+      if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
+        const oldestKey = globalMessageStore.keys().next().value;
+        globalMessageStore.delete(oldestKey);
+      }
+      globalMessageStore.set(result.key.id, {
+        message: { text: messageText },
+        timestamp: Date.now(),
+        accountId
+      });
     }
     
     this.metrics.messagesProcessed++;
@@ -1702,10 +1717,17 @@ class WhatsAppManager {
     
     rateLimiter.recordMessage(accountId);
     
-    // Cache for retry
-    if (sock.messageRetryMap && result?.key?.id) {
-      sock.messageRetryMap.set(result.key.id, { text: messageText });
-      setTimeout(() => sock.messageRetryMap?.delete(result.key.id), 5 * 60 * 1000);
+    // Store for retry support
+    if (result?.key?.id) {
+      if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
+        const oldestKey = globalMessageStore.keys().next().value;
+        globalMessageStore.delete(oldestKey);
+      }
+      globalMessageStore.set(result.key.id, {
+        message: { text: messageText },
+        timestamp: Date.now(),
+        accountId
+      });
     }
     
     this.metrics.messagesProcessed++;
