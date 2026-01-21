@@ -82,7 +82,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Session configuration with enhanced security
 // Use MemoryStore for simplicity - sessions will reset on server restart
 // To enable persistent sessions, set DATABASE_URL or SUPABASE_DB_PASSWORD
-let sessionStore = new session.MemoryStore();
+let sessionStore = null;
+let usingMemoryStore = false;
 
 // Check for DATABASE_URL first (Render/Heroku style), then fall back to SUPABASE_DB_PASSWORD
 if (process.env.DATABASE_URL) {
@@ -123,7 +124,7 @@ if (process.env.DATABASE_URL) {
     logger.info('Using PostgreSQL for session storage (DATABASE_URL)');
   } catch (e) {
     logger.error('PostgreSQL session setup failed, using MemoryStore:', e.message);
-    sessionStore = new session.MemoryStore();
+    sessionStore = null;
   }
 } else if (process.env.SUPABASE_DB_PASSWORD) {
   try {
@@ -157,10 +158,19 @@ if (process.env.DATABASE_URL) {
     logger.info('Using PostgreSQL for session storage (SUPABASE_DB_PASSWORD)');
   } catch (e) {
     logger.error('PostgreSQL session setup failed, using MemoryStore:', e.message);
-    sessionStore = new session.MemoryStore();
+    sessionStore = null;
   }
-} else {
-  logger.info('Using MemoryStore for sessions (set DATABASE_URL or SUPABASE_DB_PASSWORD for persistence)');
+}
+
+// Fallback to MemoryStore if no database session store is configured
+if (!sessionStore) {
+  sessionStore = new session.MemoryStore();
+  usingMemoryStore = true;
+  if (process.env.NODE_ENV === 'production') {
+    logger.warn('Using MemoryStore for sessions in production. Set DATABASE_URL for persistence.');
+  } else {
+    logger.info('Using MemoryStore for sessions (dev mode)');
+  }
 }
 
 // Generate a secure session secret if not provided
