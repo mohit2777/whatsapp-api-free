@@ -980,16 +980,43 @@ app.post('/api/send-media', requireApiKey, messageLimiter, upload.single('media'
       return res.status(400).json({ error: 'number is required' });
     }
 
-    if (!file) {
-      return res.status(400).json({ error: 'Media file is required' });
-    }
+    let mediaData;
 
-    // Convert file to base64
-    const mediaData = {
-      data: file.buffer.toString('base64'),
-      mimetype: file.mimetype,
-      filename: file.originalname
-    };
+    // Check for file upload (form-data)
+    if (file) {
+      mediaData = {
+        data: file.buffer.toString('base64'),
+        mimetype: file.mimetype,
+        filename: file.originalname
+      };
+    }
+    // Check for base64 in JSON body
+    else if (req.body.data && req.body.mimetype) {
+      // Strip data URL prefix if present (e.g., "data:image/png;base64,...")
+      let base64Data = req.body.data;
+      if (base64Data.includes(',')) {
+        base64Data = base64Data.split(',')[1];
+      }
+      
+      mediaData = {
+        data: base64Data,
+        mimetype: req.body.mimetype,
+        filename: req.body.filename || 'file'
+      };
+    }
+    // Check for URL
+    else if (req.body.url) {
+      mediaData = {
+        url: req.body.url,
+        mimetype: req.body.mimetype || '',
+        filename: req.body.filename || ''
+      };
+    }
+    else {
+      return res.status(400).json({ 
+        error: 'Media is required. Provide either: file upload (form-data), base64 data with mimetype, or url' 
+      });
+    }
 
     const result = await whatsappManager.sendMedia(
       account_id,
