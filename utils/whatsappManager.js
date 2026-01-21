@@ -164,14 +164,16 @@ function getAccountBrowserFingerprint(accountId) {
   // This simulates different Chrome installations on different machines
   const hash = crypto.createHash('sha256').update(accountId).digest('hex');
   
-  // Use hash to create variation in Chrome version (120.0.6099.100 - 120.0.6099.200)
-  const minorVersion = 100 + (parseInt(hash.slice(0, 4), 16) % 100);
+  // Use current Chrome version (update this quarterly!)
+  // As of Jan 2026, Chrome is at version 131+
+  const majorVersion = 131;
+  const minorVersion = parseInt(hash.slice(0, 4), 16) % 100;
   
   // Vary the platform slightly based on hash
-  const platforms = ['Windows', 'Windows 10', 'Win64'];
+  const platforms = ['Windows', 'Windows 10', 'Windows 11'];
   const platformIndex = parseInt(hash.slice(4, 6), 16) % platforms.length;
   
-  return [`Chrome (${platforms[platformIndex]})`, 'Chrome', `120.0.6099.${minorVersion}`];
+  return [`Chrome (${platforms[platformIndex]})`, 'Chrome', `${majorVersion}.0.6778.${minorVersion}`];
 }
 
 // ============================================================================
@@ -488,9 +490,9 @@ class WhatsAppManager {
     // Cleanup disconnected accounts (every 5 minutes)
     setInterval(() => this.cleanupDisconnectedAccounts(), 300000);
 
-    // Refresh presence for all accounts (every 15 minutes) - ANTI-BAN: was 4 min
-    // Human users don't refresh presence frequently
-    setInterval(() => this.refreshAllPresence(), 900000);
+    // Refresh presence for all accounts (every 30-60 minutes) - ANTI-BAN: was 15 min
+    // Stagger each account to avoid synchronized patterns
+    setInterval(() => this.refreshAllPresenceStaggered(), 1800000 + Math.random() * 1800000);
     
     // Periodic database sync for connected accounts (every 5 minutes)
     // This ensures auth is always saved in case of crashes
@@ -512,17 +514,29 @@ class WhatsAppManager {
   }
 
   // Refresh presence for all connected accounts to maintain delivery receipt capability
-  async refreshAllPresence() {
+  // ANTI-BAN: Stagger each account by random delay to avoid synchronized patterns
+  async refreshAllPresenceStaggered() {
     for (const [accountId, sock] of this.clients) {
       if (this.accountStatus.get(accountId) === 'ready' && sock) {
-        try {
-          await sock.sendPresenceUpdate('available');
-          logger.debug(`[${accountId}] Presence refreshed to 'available'`);
-        } catch (e) {
-          // Ignore errors - connection may be temporarily unstable
-        }
+        // Stagger each account by 0-5 minutes
+        const staggerMs = Math.random() * 300000;
+        setTimeout(async () => {
+          try {
+            if (this.accountStatus.get(accountId) === 'ready') {
+              await sock.sendPresenceUpdate('available');
+              logger.debug(`[${accountId}] Presence refreshed to 'available'`);
+            }
+          } catch (e) {
+            // Ignore errors - connection may be temporarily unstable
+          }
+        }, staggerMs);
       }
     }
+  }
+
+  // Legacy method for backwards compatibility
+  async refreshAllPresence() {
+    return this.refreshAllPresenceStaggered();
   }
 
   setSocketIO(io) {
@@ -873,7 +887,8 @@ class WhatsAppManager {
           const attempts = this.reconnectAttempts.get(accountId) || { count: 0, lastAttempt: 0 };
           const now = Date.now();
           
-          if (now - attempts.lastAttempt > 300000) {
+          // ANTI-BAN: Track over 1 hour window (was 5 minutes)
+          if (now - attempts.lastAttempt > 3600000) {
             attempts.count = 0;
           }
           
@@ -881,11 +896,12 @@ class WhatsAppManager {
           attempts.lastAttempt = now;
           this.reconnectAttempts.set(accountId, attempts);
           
-          const backoffMs = Math.min(10000 * Math.pow(2, attempts.count - 1), 300000);
+          const backoffMs = Math.min(30000 * Math.pow(2, attempts.count - 1), 600000); // 30s, 60s, 120s, max 10min
           
-          // ANTI-BAN: Reduced from 5 to 3 - too many reconnects triggers bans
-          if (attempts.count > 3) {
-            logger.error(`Connection replaced too many times for ${accountId} - STOPPING to prevent ban`);
+          // ANTI-BAN: Only allow 2 attempts per hour (was 3 per 5 min)
+          if (attempts.count >= 2) {
+            logger.error(`Connection replaced ${attempts.count} times for ${accountId} - STOPPING to prevent ban`);
+            logger.error(`Close WhatsApp on other devices and wait 1 hour before reconnecting`);
             await db.updateAccount(accountId, {
               status: 'disconnected',
               error_message: 'Connection replaced multiple times - close WhatsApp on other devices and try again in 1 hour',
@@ -1205,32 +1221,33 @@ class WhatsAppManager {
             const replyJid = chatJid;
             
             try {
-              // Reduce typing delay for faster response (500ms instead of 1500ms default)
-              const originalTypingDelay = process.env.TYPING_DELAY_MS;
-              process.env.TYPING_DELAY_MS = '500';
+              // ANTI-BAN: Apply rate limiting to chatbot responses too!
+              await rateLimiter.waitWithJitter(accountId);
               
               logger.info(`[Chatbot] Sending response to ${chatPhone}...`);
               
               // Send directly using sock.sendMessage with the exact JID
               const sock = this.clients.get(accountId);
               if (sock) {
+                // ANTI-BAN: Calculate typing time based on response length
+                // Average human types ~200 chars/min = 3.3 chars/sec
+                const typingTime = Math.min(8000, Math.max(1500, (aiResponse.length / 3.3) * 1000));
+                const typingJitter = Math.random() * 1500;
+                
                 // Show typing
                 try {
                   await sock.presenceSubscribe(replyJid);
                   await sock.sendPresenceUpdate('composing', replyJid);
-                  await new Promise(resolve => setTimeout(resolve, 500));
+                  await new Promise(resolve => setTimeout(resolve, typingTime + typingJitter));
                   await sock.sendPresenceUpdate('paused', replyJid);
                 } catch {}
                 
                 const result = await sock.sendMessage(replyJid, { text: aiResponse });
+                
+                // ANTI-BAN: Record message for rate limiting
+                rateLimiter.recordMessage(accountId);
+                
                 logger.info(`[Chatbot] ✅ Response sent to ${chatPhone} (msgId: ${result?.key?.id?.slice(0, 10)}...)`);
-              }
-              
-              // Restore original typing delay
-              if (originalTypingDelay !== undefined) {
-                process.env.TYPING_DELAY_MS = originalTypingDelay;
-              } else {
-                delete process.env.TYPING_DELAY_MS;
               }
             } catch (sendError) {
               logger.error(`[Chatbot] ❌ Failed to send response: ${sendError.message}`);
@@ -1294,14 +1311,19 @@ class WhatsAppManager {
       }
 
       // Show typing indicator (human-like behavior)
-      // ANTI-BAN: Longer, more natural typing simulation
-      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 2500; // 2.5s base (was 1.5s)
-      const typingJitter = Math.floor(Math.random() * 1500); // 0-1.5s random (was 0.5s)
-      if (typingDelay > 0) {
+      // ANTI-BAN: Calculate typing time based on message length
+      // Average human types ~200 chars/min = 3.3 chars/sec
+      const charsPerSecond = 3.3;
+      const minTypingMs = 1500;
+      const maxTypingMs = 8000;
+      const baseTyping = Math.min(maxTypingMs, Math.max(minTypingMs, (message.length / charsPerSecond) * 1000));
+      const typingJitter = Math.random() * 2000; // 0-2s random
+      
+      if (baseTyping > 0) {
         try {
           await sock.presenceSubscribe(jid);
           await sock.sendPresenceUpdate('composing', jid);
-          await new Promise(resolve => setTimeout(resolve, typingDelay + typingJitter));
+          await new Promise(resolve => setTimeout(resolve, baseTyping + typingJitter));
           await sock.sendPresenceUpdate('paused', jid);
         } catch (e) { /* ignore presence errors */ }
       }
@@ -1770,8 +1792,18 @@ class WhatsAppManager {
       logger.info(`${accountsToRestore.length}/${accounts.length} have saved auth`);
 
       // STEP 2: Connect accounts with auth ONE BY ONE with delay
-      // ANTI-BAN: Longer delays to prevent burst connection patterns
+      // ANTI-BAN: Limit connections per startup window to prevent bot farm detection
+      const MAX_ACCOUNTS_PER_STARTUP = 3; // Max 3 accounts per startup burst
+      let connectedCount = 0;
+      
       for (const account of accountsToRestore) {
+        // ANTI-BAN: If we've connected max accounts, wait longer
+        if (connectedCount >= MAX_ACCOUNTS_PER_STARTUP) {
+          logger.warn(`[Startup] Connected ${MAX_ACCOUNTS_PER_STARTUP} accounts - waiting 10 minutes before more...`);
+          await new Promise(resolve => setTimeout(resolve, 600000)); // 10 minute cooldown
+          connectedCount = 0;
+        }
+        
         try {
           logger.info(`[Startup] Connecting ${account.name}...`);
           
@@ -1779,10 +1811,11 @@ class WhatsAppManager {
             skipIfNoSession: false,
             reason: 'startup'
           });
+          
+          connectedCount++;
 
-          // ANTI-BAN: Wait 10-20 seconds between connects (was 3-5s)
-          // WhatsApp monitors for rapid multi-account connections from same IP
-          const delay = 10000 + Math.random() * 10000;
+          // ANTI-BAN: Wait 30-60 seconds between connects (was 10-20s)
+          const delay = 30000 + Math.random() * 30000;
           logger.info(`[Startup] Waiting ${Math.round(delay/1000)}s before next account...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           
