@@ -147,17 +147,31 @@ const AUTH_VERSION = 4; // Simplified auth format
 // INSTANCE ID - For logging and debugging
 // ============================================================================
 const os = require('os');
+const crypto = require('crypto');
 const INSTANCE_ID = `${os.hostname()}-${process.pid}-${Date.now()}`.slice(-20);
 logger.info(`[Instance] ID: ${INSTANCE_ID}`);
 
+// Connection locks - prevent concurrent connections to same account
+const connectionLocks = new Map(); // accountId -> { timestamp, instanceId }
+
 /**
  * Generate stable per-account browser fingerprint
- * UPDATED: Uses standard Chrome configuration to reduce ban risk
+ * CRITICAL: Each account MUST have a unique fingerprint to avoid detection
+ * WhatsApp flags multiple accounts using identical device signatures
  */
 function getAccountBrowserFingerprint(accountId) {
-  // Use a standard, non-suspicious browser signature
-  // Avoids custom strings like 'WhatsApp Manager' which might be flagged
-  return ['Chrome (Windows)', 'Chrome', '120.0.6099.130'];
+  // Generate a deterministic but unique browser version per account
+  // This simulates different Chrome installations on different machines
+  const hash = crypto.createHash('sha256').update(accountId).digest('hex');
+  
+  // Use hash to create variation in Chrome version (120.0.6099.100 - 120.0.6099.200)
+  const minorVersion = 100 + (parseInt(hash.slice(0, 4), 16) % 100);
+  
+  // Vary the platform slightly based on hash
+  const platforms = ['Windows', 'Windows 10', 'Win64'];
+  const platformIndex = parseInt(hash.slice(4, 6), 16) % platforms.length;
+  
+  return [`Chrome (${platforms[platformIndex]})`, 'Chrome', `120.0.6099.${minorVersion}`];
 }
 
 // ============================================================================
@@ -187,7 +201,23 @@ function getAccountBrowserFingerprint(accountId) {
 async function restoreAuthFromDatabase(accountId) {
   const sessionPath = path.join('./wa-sessions-temp', accountId);
   
-  // Ensure clean directory
+  // Check if local files exist and are recent (within last 5 minutes)
+  // If so, prefer local files over database (prevents destroying in-progress QR handshake)
+  const credsPath = path.join(sessionPath, 'creds.json');
+  if (fs.existsSync(credsPath)) {
+    try {
+      const stats = fs.statSync(credsPath);
+      const ageMs = Date.now() - stats.mtimeMs;
+      if (ageMs < 300000) { // 5 minutes
+        logger.info(`[Auth] Using recent local files for ${accountId} (${Math.round(ageMs/1000)}s old)`);
+        return { restored: true, sessionPath };
+      }
+    } catch (e) {
+      // Ignore stat errors
+    }
+  }
+  
+  // Ensure clean directory for restore
   if (fs.existsSync(sessionPath)) {
     fs.rmSync(sessionPath, { recursive: true, force: true });
   }
@@ -458,8 +488,9 @@ class WhatsAppManager {
     // Cleanup disconnected accounts (every 5 minutes)
     setInterval(() => this.cleanupDisconnectedAccounts(), 300000);
 
-    // Refresh presence for all accounts (every 4 minutes)
-    setInterval(() => this.refreshAllPresence(), 240000);
+    // Refresh presence for all accounts (every 15 minutes) - ANTI-BAN: was 4 min
+    // Human users don't refresh presence frequently
+    setInterval(() => this.refreshAllPresence(), 900000);
     
     // Periodic database sync for connected accounts (every 5 minutes)
     // This ensures auth is always saved in case of crashes
@@ -539,6 +570,8 @@ class WhatsAppManager {
       this.clients.delete(accountId);
       this.qrCodes.delete(accountId);
       this.authStates.delete(accountId);
+      // Release connection lock
+      connectionLocks.delete(accountId);
     }
 
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -582,6 +615,20 @@ class WhatsAppManager {
       logger.info(`Skipping client start - account ${accountId} was deleted`);
       return null;
     }
+
+    // ANTI-BAN: Check connection lock to prevent duplicate connections
+    const existingLock = connectionLocks.get(accountId);
+    if (existingLock && existingLock.instanceId !== INSTANCE_ID) {
+      const lockAge = Date.now() - existingLock.timestamp;
+      // Lock expires after 5 minutes (in case instance crashed)
+      if (lockAge < 300000) {
+        logger.warn(`[Auth] Account ${accountId} locked by another instance (${existingLock.instanceId}). Waiting...`);
+        throw new Error('Account is connected from another instance');
+      }
+    }
+    
+    // Acquire lock
+    connectionLocks.set(accountId, { timestamp: Date.now(), instanceId: INSTANCE_ID });
 
     const sessionPath = path.join('./wa-sessions-temp', accountId);
 
@@ -686,6 +733,16 @@ class WhatsAppManager {
           logger.info(`Skipping QR generation - account ${accountId} was deleted`);
           return;
         }
+        
+        // ANTI-BAN: Rate limit QR generation (max 1 every 30 seconds)
+        const lastQrTime = this.qrAttempts.get(accountId) || 0;
+        const qrCooldown = 30000; // 30 seconds
+        if (Date.now() - lastQrTime < qrCooldown) {
+          logger.warn(`[QR] Rate limited for ${accountId} - too many QR requests`);
+          return;
+        }
+        this.qrAttempts.set(accountId, Date.now());
+        
         try {
           const qrDataUrl = await qrcode.toDataURL(qr);
           this.qrCodes.set(accountId, qrDataUrl);
@@ -750,13 +807,20 @@ class WhatsAppManager {
           }
         }, 5000); // Wait 5 seconds for keys to stabilize
 
-        // Tell WhatsApp we're online for delivery receipts
-        try {
-          await sock.sendPresenceUpdate('available');
-          logger.info(`[${accountId}] Presence set to 'available'`);
-        } catch (e) {
-          logger.warn(`[${accountId}] Failed to set presence: ${e.message}`);
-        }
+        // ANTI-BAN: Don't immediately set presence to 'available'
+        // Let it happen naturally after 30-60 seconds (more human-like)
+        // Immediate online status after connect is a bot indicator
+        const presenceDelay = 30000 + Math.random() * 30000; // 30-60 seconds
+        setTimeout(async () => {
+          try {
+            if (this.accountStatus.get(accountId) === 'ready') {
+              await sock.sendPresenceUpdate('available');
+              logger.info(`[${accountId}] Presence set to 'available' (delayed)`);
+            }
+          } catch (e) {
+            logger.warn(`[${accountId}] Failed to set presence: ${e.message}`);
+          }
+        }, presenceDelay);
 
         this.emitToAll('ready', { accountId, phoneNumber });
         logger.info(`✅ WhatsApp ready for ${accountId} (${phoneNumber})`);
@@ -1706,7 +1770,7 @@ class WhatsAppManager {
       logger.info(`${accountsToRestore.length}/${accounts.length} have saved auth`);
 
       // STEP 2: Connect accounts with auth ONE BY ONE with delay
-      // This prevents burst reconnect patterns that trigger bans
+      // ANTI-BAN: Longer delays to prevent burst connection patterns
       for (const account of accountsToRestore) {
         try {
           logger.info(`[Startup] Connecting ${account.name}...`);
@@ -1716,8 +1780,10 @@ class WhatsAppManager {
             reason: 'startup'
           });
 
-          // Wait 3-5 seconds between connects (anti-ban)
-          const delay = 3000 + Math.random() * 2000;
+          // ANTI-BAN: Wait 10-20 seconds between connects (was 3-5s)
+          // WhatsApp monitors for rapid multi-account connections from same IP
+          const delay = 10000 + Math.random() * 10000;
+          logger.info(`[Startup] Waiting ${Math.round(delay/1000)}s before next account...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           
         } catch (err) {
