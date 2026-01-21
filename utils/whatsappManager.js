@@ -313,11 +313,14 @@ class AccountRateLimiter {
     // Track message timestamps per account
     this.messageTimestamps = new Map(); // accountId -> [timestamps]
     this.lastMessageTime = new Map();   // accountId -> timestamp
+    this.dailyMessageCount = new Map(); // accountId -> { date, count }
     
-    // Configurable limits
-    this.minIntervalMs = parseInt(process.env.WA_MIN_MESSAGE_INTERVAL_MS) || 3000; // 3s between messages
-    this.maxMessagesPerHour = parseInt(process.env.WA_MAX_MESSAGES_PER_HOUR) || 200;
-    this.randomDelayMs = parseInt(process.env.WA_RANDOM_DELAY_MS) || 1000; // 0-1s random delay
+    // ANTI-BAN: Conservative limits to avoid detection
+    // New accounts should start even slower!
+    this.minIntervalMs = parseInt(process.env.WA_MIN_MESSAGE_INTERVAL_MS) || 5000; // 5s between messages (was 3s)
+    this.maxMessagesPerHour = parseInt(process.env.WA_MAX_MESSAGES_PER_HOUR) || 60; // 60/hr (was 200)
+    this.maxMessagesPerDay = parseInt(process.env.WA_MAX_MESSAGES_PER_DAY) || 500; // 500/day limit
+    this.randomDelayMs = parseInt(process.env.WA_RANDOM_DELAY_MS) || 2000; // 0-2s random delay (was 1s)
     
     // Cleanup old timestamps every 10 minutes
     setInterval(() => this.cleanup(), 600000);
@@ -326,11 +329,29 @@ class AccountRateLimiter {
   // Check if account can send a message, returns delay needed (0 = can send now)
   getRequiredDelay(accountId) {
     const now = Date.now();
+    const today = new Date().toISOString().split('T')[0];
     const lastTime = this.lastMessageTime.get(accountId) || 0;
     const elapsed = now - lastTime;
     
+    // Check minimum interval between messages
     if (elapsed < this.minIntervalMs) {
       return this.minIntervalMs - elapsed + Math.random() * this.randomDelayMs;
+    }
+    
+    // ANTI-BAN: Check daily limit first (most important)
+    const dailyData = this.dailyMessageCount.get(accountId) || { date: today, count: 0 };
+    if (dailyData.date !== today) {
+      // Reset for new day
+      dailyData.date = today;
+      dailyData.count = 0;
+    }
+    
+    if (dailyData.count >= this.maxMessagesPerDay) {
+      logger.warn(`[RateLimit] Account ${accountId} hit DAILY limit (${this.maxMessagesPerDay}) - BLOCKED until tomorrow`);
+      // Calculate time until midnight
+      const midnight = new Date();
+      midnight.setHours(24, 0, 0, 0);
+      return midnight.getTime() - now;
     }
     
     // Check hourly limit
@@ -349,11 +370,24 @@ class AccountRateLimiter {
   // Record a sent message
   recordMessage(accountId) {
     const now = Date.now();
+    const today = new Date().toISOString().split('T')[0];
+    
     this.lastMessageTime.set(accountId, now);
     
     const timestamps = this.messageTimestamps.get(accountId) || [];
     timestamps.push(now);
     this.messageTimestamps.set(accountId, timestamps);
+    
+    // Track daily count
+    const dailyData = this.dailyMessageCount.get(accountId) || { date: today, count: 0 };
+    if (dailyData.date !== today) {
+      dailyData.date = today;
+      dailyData.count = 0;
+    }
+    dailyData.count++;
+    this.dailyMessageCount.set(accountId, dailyData);
+    
+    logger.debug(`[RateLimit] ${accountId}: ${dailyData.count}/${this.maxMessagesPerDay} daily, ${timestamps.filter(t => t > now - 3600000).length}/${this.maxMessagesPerHour} hourly`);
   }
 
   // Wait with random jitter (anti-pattern detection)
@@ -785,11 +819,12 @@ class WhatsAppManager {
           
           const backoffMs = Math.min(10000 * Math.pow(2, attempts.count - 1), 300000);
           
-          if (attempts.count > 5) {
-            logger.error(`Connection replaced too many times for ${accountId}`);
+          // ANTI-BAN: Reduced from 5 to 3 - too many reconnects triggers bans
+          if (attempts.count > 3) {
+            logger.error(`Connection replaced too many times for ${accountId} - STOPPING to prevent ban`);
             await db.updateAccount(accountId, {
               status: 'disconnected',
-              error_message: 'Connection replaced - WhatsApp may be open on another device',
+              error_message: 'Connection replaced multiple times - close WhatsApp on other devices and try again in 1 hour',
               updated_at: new Date().toISOString()
             }).catch(() => {});
             this.accountStatus.set(accountId, 'disconnected');
@@ -822,6 +857,13 @@ class WhatsAppManager {
             this.accountStatus.set(accountId, 'reconnecting');
           }
           
+          // ANTI-BAN: Use longer delays with jitter to avoid pattern detection
+          const baseDelay = 15000; // 15 seconds base
+          const jitter = Math.floor(Math.random() * 15000); // 0-15s random
+          const reconnectDelay = baseDelay + jitter;
+          
+          logger.info(`[Reconnect] Will retry ${accountId} in ${Math.round(reconnectDelay/1000)}s...`);
+          
           setTimeout(async () => {
             if (!this.isShuttingDown && !this.deletedAccounts.has(accountId)) {
               // If it was a 428 error, we definitely want to try reconnecting
@@ -839,11 +881,15 @@ class WhatsAppManager {
                 }
               }
             }
-          }, 3000);
+          }, reconnectDelay);
         } else if (shouldReconnect && !this.isShuttingDown) {
           // Normal disconnect - reconnect after delay
           this.accountStatus.set(accountId, 'reconnecting');
           this.reconnectAttempts.delete(accountId);
+          
+          // ANTI-BAN: Longer delay with jitter for normal disconnects
+          const normalDelay = 10000 + Math.floor(Math.random() * 10000); // 10-20s
+          logger.info(`[Reconnect] Will reconnect ${accountId} in ${Math.round(normalDelay/1000)}s...`);
           
           setTimeout(async () => {
             if (!this.isShuttingDown && !this.reconnecting.has(accountId) && !this.deletedAccounts.has(accountId)) {
@@ -855,7 +901,7 @@ class WhatsAppManager {
                 this.accountStatus.set(accountId, 'disconnected');
               }
             }
-          }, 3000);
+          }, normalDelay);
         } else {
           await db.updateAccount(accountId, {
             status: 'disconnected',
@@ -1184,8 +1230,9 @@ class WhatsAppManager {
       }
 
       // Show typing indicator (human-like behavior)
-      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 1500;
-      const typingJitter = Math.floor(Math.random() * 500); // 0-500ms random
+      // ANTI-BAN: Longer, more natural typing simulation
+      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 2500; // 2.5s base (was 1.5s)
+      const typingJitter = Math.floor(Math.random() * 1500); // 0-1.5s random (was 0.5s)
       if (typingDelay > 0) {
         try {
           await sock.presenceSubscribe(jid);
@@ -1301,8 +1348,9 @@ class WhatsAppManager {
       }
 
       // Show typing indicator with jitter (don't fail media send on presence errors)
-      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 1500;
-      const typingJitter = Math.floor(Math.random() * 500); // 0-500ms random
+      // ANTI-BAN: Longer, more natural typing simulation
+      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 2500; // 2.5s base
+      const typingJitter = Math.floor(Math.random() * 1500); // 0-1.5s random
       if (typingDelay > 0) {
         try {
           await sock.presenceSubscribe(jid);
