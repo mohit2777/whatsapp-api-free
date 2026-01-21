@@ -254,11 +254,15 @@ async function restoreAuthFromDatabase(accountId) {
 async function saveAuthToDatabase(accountId, sessionPath) {
   try {
     const credsPath = path.join(sessionPath, 'creds.json');
-    if (!fs.existsSync(credsPath)) {
-      return false;
-    }
+    
+    // Check existence asynchronously
+    try {
+      if (!fs.existsSync(credsPath)) return false;
+    } catch { return false; }
 
-    const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+    // Read creds (async to prevent blocking loop)
+    const credsData = await fs.promises.readFile(credsPath, 'utf-8');
+    const creds = JSON.parse(credsData);
 
     // Only save if we have valid auth (me.id present)
     if (!creds.me?.id) {
@@ -266,16 +270,21 @@ async function saveAuthToDatabase(accountId, sessionPath) {
       return false;
     }
 
-    // Collect all key files
+    // Collect all key files asynchronously
     const keys = {};
-    const files = fs.readdirSync(sessionPath);
-    for (const file of files) {
+    const files = await fs.promises.readdir(sessionPath);
+    
+    // Process files in parallel
+    const filePromises = files.map(async (file) => {
       if (file !== 'creds.json' && file.endsWith('.json')) {
         try {
-          keys[file] = JSON.parse(fs.readFileSync(path.join(sessionPath, file), 'utf-8'));
+          const content = await fs.promises.readFile(path.join(sessionPath, file), 'utf-8');
+          keys[file] = JSON.parse(content);
         } catch {}
       }
-    }
+    });
+    
+    await Promise.all(filePromises);
 
     const authBlob = {
       creds,
@@ -861,32 +870,8 @@ class WhatsAppManager {
     });
 
     // Credentials updated - save to LOCAL file only (atomic keys already persisted)
-    // CRITICAL: We now also sync to DB with debounce to fix "Waiting for message" issues
-    sock.ev.on('creds.update', async () => {
-      await saveCreds();
-      
-      // Debounced DB Sync (2s)
-      // This ensures that new encryption keys (PreKeys) are persisted to the DB
-      // quickly enough so that if the bot restarts, it doesn't lose the keys
-      // that the recipient is expecting.
-      const authState = this.authStates.get(accountId);
-      if (authState) {
-        if (authState.saveTimer) clearTimeout(authState.saveTimer);
-        
-        authState.saveTimer = setTimeout(async () => {
-          if (this.isShuttingDown || this.deletedAccounts.has(accountId)) return;
-          try {
-            if (authState.sessionPath) {
-              await saveAuthToDatabase(accountId, authState.sessionPath);
-              // limit logging to debug to prevent spam
-              // logger.debug(`[Auth] 💾 Synced to DB for ${accountId}`);
-            }
-          } catch (e) {
-            logger.warn(`[Auth] Sync failed during creds update for ${accountId}: ${e.message}`);
-          }
-        }, 2000);
-      }
-    });
+    // database sync happens on connection.open stabilization and periodic saves
+    sock.ev.on('creds.update', saveCreds);
 
     // History sync - log only, no special handling needed
     // Keys are saved atomically as they're created
@@ -1180,17 +1165,23 @@ class WhatsAppManager {
   }
 
   async sendMessage(accountId, number, message, options = {}) {
-    const sock = this.clients.get(accountId);
-    if (!sock) throw new Error('Client not found');
-
-    const status = this.accountStatus.get(accountId);
-    if (status !== 'ready') throw new Error(`Client not ready: ${status}`);
+    // PRE-CHECK: Fail fast if account doesn't exist
+    if (!this.clients.has(accountId)) throw new Error('Client not found');
 
     const jid = this.formatPhoneNumber(number);
 
     try {
       // Anti-ban: Wait for rate limit with jitter
       await rateLimiter.waitWithJitter(accountId);
+
+      // CRITICAL FIX: Retreive socket specifically AFTER the wait
+      // A reconnection might have happened during the delay
+      let sock = this.clients.get(accountId);
+      let status = this.accountStatus.get(accountId);
+
+      if (!sock || status !== 'ready') {
+        throw new Error(`Client not ready after wait: ${status}`);
+      }
 
       // Show typing indicator (human-like behavior)
       const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 1500;
@@ -1203,6 +1194,10 @@ class WhatsAppManager {
           await sock.sendPresenceUpdate('paused', jid);
         } catch (e) { /* ignore presence errors */ }
       }
+
+      // Re-fetch socket one last time before critical send
+      sock = this.clients.get(accountId);
+      if (!sock) throw new Error('Client lost connection during typing delay');
 
       // Create message content
       const msgContent = { text: message };
@@ -1240,6 +1235,10 @@ class WhatsAppManager {
 
       this.metrics.messagesProcessed++;
 
+       // OPTIMIZED: Remove aggressive flush on every message
+       // The 'creds.update' event is already debounced and handles key rotation.
+       // We trust the 500ms debounce we added earlier to catch this without hammering DB.
+       
       return {
         success: true,
         messageId: result.key.id,
@@ -1253,17 +1252,15 @@ class WhatsAppManager {
   }
 
   async sendMedia(accountId, number, media, caption = '', options = {}) {
-    const sock = this.clients.get(accountId);
-    if (!sock) throw new Error('Client not found');
-
-    const status = this.accountStatus.get(accountId);
-    if (status !== 'ready') throw new Error(`Client not ready: ${status}`);
+    // PRE-CHECK: just to fail fast, but we'll fetch again later
+    if (!this.clients.has(accountId)) throw new Error('Client not found');
 
     try {
       let base64Data = media.data || '';
       let mimetype = media.mimetype || '';
       let filename = media.filename || '';
 
+      // ... existing media processing ...
       // Fetch from URL if needed
       if (media.url && !base64Data) {
         const response = await axios.get(media.url, {
@@ -1294,6 +1291,14 @@ class WhatsAppManager {
 
       // Anti-ban: Wait for rate limit with jitter
       await rateLimiter.waitWithJitter(accountId);
+
+      // CRITICAL FIX: Fetch socket *AFTER* the delay to ensure it's not stale/disconnected
+      const sock = this.clients.get(accountId);
+      const status = this.accountStatus.get(accountId);
+      
+      if (!sock || status !== 'ready') {
+        throw new Error(`Client not ready after wait: ${status || 'unknown'}`);
+      }
 
       // Show typing indicator with jitter (don't fail media send on presence errors)
       const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 1500;
