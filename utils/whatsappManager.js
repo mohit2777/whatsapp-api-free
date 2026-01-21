@@ -745,10 +745,14 @@ class WhatsAppManager {
         retryRequestDelayMs: 350, // Match Evolution API's setting
         maxMsgRetryCount: 4,      // Match Evolution API's setting
         getMessage: async (key) => {
+          // CRITICAL: This is called by Baileys when WhatsApp requests a message resend
+          // If we don't return the message, the receiver sees "Waiting for this message"
+          logger.info(`[getMessage] ⚡ Retry requested for message ${key.id?.slice(0, 20)}... remoteJid: ${key.remoteJid?.slice(0, 20)}`);
+          
           // L1: Check in-memory cache first (fastest)
           if (globalMessageStore.has(key.id)) {
             const stored = globalMessageStore.get(key.id);
-            logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in memory`);
+            logger.info(`[getMessage] ✅ Found message ${key.id?.slice(0, 15)}... in MEMORY cache`);
             return stored.message;
           }
           
@@ -756,7 +760,7 @@ class WhatsAppManager {
           try {
             const dbMessage = await db.getMessage(accountId, key.id);
             if (dbMessage) {
-              logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in database`);
+              logger.info(`[getMessage] ✅ Found message ${key.id?.slice(0, 15)}... in DATABASE`);
               // Re-populate memory cache for future fast access
               globalMessageStore.set(key.id, {
                 message: dbMessage,
@@ -769,8 +773,8 @@ class WhatsAppManager {
             logger.warn(`[getMessage] DB lookup failed: ${e.message}`);
           }
           
-          // Message not found anywhere
-          logger.warn(`[getMessage] Message ${key.id?.slice(0, 15)}... not found for retry`);
+          // Message not found - THIS CAUSES "Waiting for this message"
+          logger.error(`[getMessage] ❌ Message ${key.id?.slice(0, 20)}... NOT FOUND for retry - receiver will see "Waiting for this message"`);
           return undefined;
         }
       });
@@ -1120,7 +1124,7 @@ class WhatsAppManager {
             db.storeMessage(accountId, message.key.id, message.message, 'in', message.key.remoteJid)
               .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
             
-            logger.debug(`[MsgStore] Stored incoming message ${message.key.id?.slice(0, 15)}...`);
+            logger.info(`[MsgStore] ✅ Stored incoming message ${message.key.id?.slice(0, 15)}... from ${message.key.remoteJid?.slice(0, 15)}`);
           }
           
           await this.handleIncomingMessage(sock, accountId, message);
@@ -1432,21 +1436,28 @@ class WhatsAppManager {
       rateLimiter.recordMessage(accountId);
 
       // Store message in global store for retry support (prevents "Waiting for this message")
-      if (result?.key?.id) {
+      // CRITICAL: Store result.message (the actual proto.IMessage), NOT msgContent (the input)
+      // Baileys getMessage callback expects the proto.IMessage format
+      if (result?.key?.id && result.message) {
         // L1: Store in memory (fast access)
         if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
           const oldestKey = globalMessageStore.keys().next().value;
           globalMessageStore.delete(oldestKey);
         }
         globalMessageStore.set(result.key.id, {
-          message: msgContent,
+          message: result.message,  // FIXED: Store proto.IMessage, not input
           timestamp: Date.now(),
           accountId
         });
         
+        logger.info(`[MsgStore] ✅ Stored outgoing message ${result.key.id?.slice(0, 15)}... for retry support`);
+        
         // L2: Persist to database (survives restarts)
-        db.storeMessage(accountId, result.key.id, msgContent, 'out', jid)
+        db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
           .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+      } else {
+        logger.warn(`[MsgStore] ⚠️ Could not store message - missing key.id or message body`);
+      }
       }
 
       await db.updateAccount(accountId, {
@@ -1548,21 +1559,26 @@ class WhatsAppManager {
       const result = await sock.sendMessage(jid, messageContent);
 
       // Store in global store for retry support
-      if (result?.key?.id) {
+      // CRITICAL: Store result.message (the actual proto.IMessage), NOT messageContent (the input)
+      if (result?.key?.id && result.message) {
         // L1: Memory cache
         if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
           const oldestKey = globalMessageStore.keys().next().value;
           globalMessageStore.delete(oldestKey);
         }
         globalMessageStore.set(result.key.id, {
-          message: messageContent,
+          message: result.message,  // FIXED: Store proto.IMessage, not input
           timestamp: Date.now(),
           accountId
         });
         
+        logger.info(`[MsgStore] ✅ Stored outgoing media ${result.key.id?.slice(0, 15)}... for retry support`);
+        
         // L2: Database persistence
-        db.storeMessage(accountId, result.key.id, messageContent, 'out', jid)
+        db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
           .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+      } else {
+        logger.warn(`[MsgStore] ⚠️ Could not store media message - missing key.id or message body`);
       }
 
       // Record message for rate limiting
@@ -1672,20 +1688,23 @@ class WhatsAppManager {
     rateLimiter.recordMessage(accountId);
     
     // Store for retry support
-    if (result?.key?.id) {
+    // CRITICAL: Store result.message (the actual proto.IMessage), NOT input
+    if (result?.key?.id && result.message) {
       // L1: Memory cache
       if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
         const oldestKey = globalMessageStore.keys().next().value;
         globalMessageStore.delete(oldestKey);
       }
       globalMessageStore.set(result.key.id, {
-        message: { text: messageText },
+        message: result.message,  // FIXED: Store proto.IMessage
         timestamp: Date.now(),
         accountId
       });
       
+      logger.info(`[MsgStore] ✅ Stored buttons message ${result.key.id?.slice(0, 15)}... for retry support`);
+      
       // L2: Database persistence
-      db.storeMessage(accountId, result.key.id, { text: messageText }, 'out', jid)
+      db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
         .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
     }
     
@@ -1766,20 +1785,23 @@ class WhatsAppManager {
     rateLimiter.recordMessage(accountId);
     
     // Store for retry support
-    if (result?.key?.id) {
+    // CRITICAL: Store result.message (the actual proto.IMessage), NOT input
+    if (result?.key?.id && result.message) {
       // L1: Memory cache
       if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
         const oldestKey = globalMessageStore.keys().next().value;
         globalMessageStore.delete(oldestKey);
       }
       globalMessageStore.set(result.key.id, {
-        message: { text: messageText },
+        message: result.message,  // FIXED: Store proto.IMessage
         timestamp: Date.now(),
         accountId
       });
       
+      logger.info(`[MsgStore] ✅ Stored list message ${result.key.id?.slice(0, 15)}... for retry support`);
+      
       // L2: Database persistence
-      db.storeMessage(accountId, result.key.id, { text: messageText }, 'out', jid)
+      db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
         .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
     }
     
