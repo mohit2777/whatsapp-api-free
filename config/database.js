@@ -1194,6 +1194,96 @@ const db = {
     const settings = await this.getNumberSettings(accountId, phoneNumber);
     return settings.flow_enabled !== false;
   },
+
+  // =========================================================================
+  // MESSAGE STORE - For Baileys getMessage retry support
+  // Fixes "Waiting for this message" issue by persisting messages to DB
+  // =========================================================================
+
+  /**
+   * Store a message for retry support
+   * @param {string} accountId - Account UUID
+   * @param {string} messageId - WhatsApp message ID
+   * @param {object} messageContent - The message content object
+   * @param {string} direction - 'in' for incoming, 'out' for outgoing
+   * @param {string} remoteJid - The remote JID (optional)
+   */
+  async storeMessage(accountId, messageId, messageContent, direction, remoteJid = null) {
+    try {
+      const { error } = await supabase
+        .from('wa_messages')
+        .upsert({
+          account_id: accountId,
+          message_id: messageId,
+          message_content: messageContent,
+          direction: direction,
+          remote_jid: remoteJid,
+          created_at: new Date().toISOString()
+        }, {
+          onConflict: 'account_id,message_id'
+        });
+
+      if (error) {
+        // Ignore duplicate key errors silently
+        if (!error.message?.includes('duplicate') && !error.code?.includes('23505')) {
+          logger.warn(`[MsgStore] Failed to store message ${messageId?.slice(0, 15)}...: ${error.message}`);
+        }
+        return false;
+      }
+      return true;
+    } catch (error) {
+      // Non-critical - don't crash on storage failures
+      logger.warn(`[MsgStore] Error storing message: ${error.message}`);
+      return false;
+    }
+  },
+
+  /**
+   * Retrieve a message for retry (getMessage callback)
+   * @param {string} accountId - Account UUID  
+   * @param {string} messageId - WhatsApp message ID
+   * @returns {object|null} - Message content or null if not found
+   */
+  async getMessage(accountId, messageId) {
+    try {
+      const { data, error } = await supabase
+        .from('wa_messages')
+        .select('message_content')
+        .eq('account_id', accountId)
+        .eq('message_id', messageId)
+        .single();
+
+      if (error || !data) {
+        return null;
+      }
+      return data.message_content;
+    } catch (error) {
+      logger.warn(`[MsgStore] Error retrieving message: ${error.message}`);
+      return null;
+    }
+  },
+
+  /**
+   * Cleanup old messages (call periodically)
+   * Removes messages older than 24 hours to prevent table bloat
+   */
+  async cleanupOldMessages() {
+    try {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { error, count } = await supabase
+        .from('wa_messages')
+        .delete()
+        .lt('created_at', cutoff);
+
+      if (!error && count > 0) {
+        logger.info(`[MsgStore] Cleaned up ${count} old messages`);
+      }
+      return true;
+    } catch (error) {
+      logger.warn(`[MsgStore] Cleanup error: ${error.message}`);
+      return false;
+    }
+  }
 };
 
 module.exports = {

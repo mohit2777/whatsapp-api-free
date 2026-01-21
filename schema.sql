@@ -118,6 +118,38 @@ CREATE TABLE IF NOT EXISTS ai_auto_replies (
 COMMENT ON TABLE ai_auto_replies IS 'Per-account AI chatbot configuration';
 
 -- ============================================================================
+-- MESSAGE STORE TABLE (For getMessage retry support - fixes "Waiting for this message")
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS wa_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id UUID NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+    message_id VARCHAR(255) NOT NULL,
+    message_content JSONB NOT NULL,
+    direction VARCHAR(10) NOT NULL CHECK (direction IN ('in', 'out')),
+    remote_jid VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Index for fast getMessage() lookups by message_id
+CREATE INDEX IF NOT EXISTS idx_wa_messages_message_id ON wa_messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_wa_messages_account_id ON wa_messages(account_id);
+-- Index for cleanup of old messages
+CREATE INDEX IF NOT EXISTS idx_wa_messages_created_at ON wa_messages(created_at);
+-- Unique constraint to prevent duplicate message_ids per account
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_messages_unique ON wa_messages(account_id, message_id);
+
+COMMENT ON TABLE wa_messages IS 'Stores message content for Baileys getMessage retry support - prevents "Waiting for this message"';
+
+-- Auto-cleanup function for old messages (keep only 24 hours)
+CREATE OR REPLACE FUNCTION cleanup_old_wa_messages()
+RETURNS void AS $$
+BEGIN
+    DELETE FROM wa_messages WHERE created_at < NOW() - INTERVAL '24 hours';
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
 -- EXPRESS SESSION TABLE (For Render/Cloud deployments)
 -- ============================================================================
 

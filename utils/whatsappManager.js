@@ -487,13 +487,14 @@ class AccountRateLimiter {
 
 const rateLimiter = new AccountRateLimiter();
 
-// Global message store for retry support (persists across reconnects)
+// Global message store for retry support (in-memory cache + database persistence)
+// In-memory acts as L1 cache, database is persistent L2 storage
 // Key: messageId, Value: { message, timestamp, accountId }
 const globalMessageStore = new Map();
 const MESSAGE_STORE_MAX_SIZE = 1000;
-const MESSAGE_STORE_TTL = 10 * 60 * 1000; // 10 minutes
+const MESSAGE_STORE_TTL = 10 * 60 * 1000; // 10 minutes in-memory
 
-// Cleanup old messages periodically
+// Cleanup old messages periodically (in-memory + database)
 setInterval(() => {
   const now = Date.now();
   for (const [id, data] of globalMessageStore) {
@@ -502,6 +503,15 @@ setInterval(() => {
     }
   }
 }, 60000);
+
+// Cleanup old database messages every hour
+setInterval(async () => {
+  try {
+    await db.cleanupOldMessages();
+  } catch (e) {
+    logger.warn(`[MsgStore] DB cleanup error: ${e.message}`);
+  }
+}, 60 * 60 * 1000);
 
 class WhatsAppManager {
   constructor() {
@@ -735,13 +745,31 @@ class WhatsAppManager {
         retryRequestDelayMs: 350, // Match Evolution API's setting
         maxMsgRetryCount: 4,      // Match Evolution API's setting
         getMessage: async (key) => {
-          // Check global message store first (persists across reconnects)
+          // L1: Check in-memory cache first (fastest)
           if (globalMessageStore.has(key.id)) {
             const stored = globalMessageStore.get(key.id);
-            logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in store`);
+            logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in memory`);
             return stored.message;
           }
-          // Return undefined to signal message not found (don't return empty message!)
+          
+          // L2: Fall back to database (persists across restarts)
+          try {
+            const dbMessage = await db.getMessage(accountId, key.id);
+            if (dbMessage) {
+              logger.debug(`[getMessage] Found message ${key.id?.slice(0, 15)}... in database`);
+              // Re-populate memory cache for future fast access
+              globalMessageStore.set(key.id, {
+                message: dbMessage,
+                timestamp: Date.now(),
+                accountId
+              });
+              return dbMessage;
+            }
+          } catch (e) {
+            logger.warn(`[getMessage] DB lookup failed: ${e.message}`);
+          }
+          
+          // Message not found anywhere
           logger.warn(`[getMessage] Message ${key.id?.slice(0, 15)}... not found for retry`);
           return undefined;
         }
@@ -1076,7 +1104,7 @@ class WhatsAppManager {
           // CRITICAL FIX: Store ALL incoming messages for retry support
           // This fixes "Waiting for this message" when replying to received messages
           if (message.key?.id && message.message) {
-            // Evict oldest if store is full
+            // L1: Store in memory (fast access)
             if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
               const oldestKey = globalMessageStore.keys().next().value;
               globalMessageStore.delete(oldestKey);
@@ -1086,6 +1114,12 @@ class WhatsAppManager {
               timestamp: Date.now(),
               accountId
             });
+            
+            // L2: Persist to database (survives restarts)
+            // Fire and forget - don't block message handling
+            db.storeMessage(accountId, message.key.id, message.message, 'in', message.key.remoteJid)
+              .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+            
             logger.debug(`[MsgStore] Stored incoming message ${message.key.id?.slice(0, 15)}...`);
           }
           
@@ -1399,7 +1433,7 @@ class WhatsAppManager {
 
       // Store message in global store for retry support (prevents "Waiting for this message")
       if (result?.key?.id) {
-        // Evict oldest if store is full
+        // L1: Store in memory (fast access)
         if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
           const oldestKey = globalMessageStore.keys().next().value;
           globalMessageStore.delete(oldestKey);
@@ -1409,6 +1443,10 @@ class WhatsAppManager {
           timestamp: Date.now(),
           accountId
         });
+        
+        // L2: Persist to database (survives restarts)
+        db.storeMessage(accountId, result.key.id, msgContent, 'out', jid)
+          .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
       }
 
       await db.updateAccount(accountId, {
@@ -1511,6 +1549,7 @@ class WhatsAppManager {
 
       // Store in global store for retry support
       if (result?.key?.id) {
+        // L1: Memory cache
         if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
           const oldestKey = globalMessageStore.keys().next().value;
           globalMessageStore.delete(oldestKey);
@@ -1520,6 +1559,10 @@ class WhatsAppManager {
           timestamp: Date.now(),
           accountId
         });
+        
+        // L2: Database persistence
+        db.storeMessage(accountId, result.key.id, messageContent, 'out', jid)
+          .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
       }
 
       // Record message for rate limiting
@@ -1630,6 +1673,7 @@ class WhatsAppManager {
     
     // Store for retry support
     if (result?.key?.id) {
+      // L1: Memory cache
       if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
         const oldestKey = globalMessageStore.keys().next().value;
         globalMessageStore.delete(oldestKey);
@@ -1639,6 +1683,10 @@ class WhatsAppManager {
         timestamp: Date.now(),
         accountId
       });
+      
+      // L2: Database persistence
+      db.storeMessage(accountId, result.key.id, { text: messageText }, 'out', jid)
+        .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
     }
     
     this.metrics.messagesProcessed++;
@@ -1719,6 +1767,7 @@ class WhatsAppManager {
     
     // Store for retry support
     if (result?.key?.id) {
+      // L1: Memory cache
       if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
         const oldestKey = globalMessageStore.keys().next().value;
         globalMessageStore.delete(oldestKey);
@@ -1728,6 +1777,10 @@ class WhatsAppManager {
         timestamp: Date.now(),
         accountId
       });
+      
+      // L2: Database persistence
+      db.storeMessage(accountId, result.key.id, { text: messageText }, 'out', jid)
+        .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
     }
     
     this.metrics.messagesProcessed++;
