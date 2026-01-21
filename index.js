@@ -970,7 +970,9 @@ app.post('/api/send', requireApiKey, messageLimiter, async (req, res) => {
 });
 
 // Send media (API Key auth)
-app.post('/api/send-media', requireApiKey, messageLimiter, upload.single('media'), async (req, res) => {
+// Send media - supports file upload, base64, or URL
+// Use conditional middleware: only run multer if content-type is multipart/form-data
+const sendMediaHandler = async (req, res) => {
   try {
     const { number, caption } = req.body;
     const account_id = req.apiAccount.id;
@@ -994,7 +996,7 @@ app.post('/api/send-media', requireApiKey, messageLimiter, upload.single('media'
     else if (req.body.data && req.body.mimetype) {
       // Strip data URL prefix if present (e.g., "data:image/png;base64,...")
       let base64Data = req.body.data;
-      if (base64Data.includes(',')) {
+      if (typeof base64Data === 'string' && base64Data.includes(',')) {
         base64Data = base64Data.split(',')[1];
       }
       
@@ -1034,7 +1036,19 @@ app.post('/api/send-media', requireApiKey, messageLimiter, upload.single('media'
     logger.error('Error sending media:', error);
     res.status(500).json({ error: 'Failed to send media', message: error.message });
   }
-});
+};
+
+// Conditional multer middleware - only parse multipart if content-type indicates it
+const conditionalUpload = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    upload.single('media')(req, res, next);
+  } else {
+    next();
+  }
+};
+
+app.post('/api/send-media', requireApiKey, messageLimiter, conditionalUpload, sendMediaHandler);
 
 // Send buttons
 app.post('/api/send-buttons', requireAuth, messageLimiter, upload.single('media'), async (req, res) => {
