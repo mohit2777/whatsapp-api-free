@@ -78,6 +78,19 @@ const { db } = require('../config/database');
 const axios = require('axios');
 const logger = require('./logger');
 const webhookDeliveryService = require('./webhookDeliveryService');
+
+// ============================================================================
+// NEW ROBUST AUTH SYSTEM - Anti-Ban Protection
+// ============================================================================
+const {
+  deviceFingerprintManager,
+  authStateManager,
+  humanBehaviorSimulator,
+  sessionValidator,
+  connectionQualityMonitor,
+  AUTH_SCHEMA_VERSION,
+  TIMING
+} = require('./authSystem');
 const chatbotManager = require('./chatbot');
 const pino = require('pino');
 const fs = require('fs');
@@ -147,7 +160,7 @@ const MEMORY_CRITICAL_THRESHOLD = 420 * 1024 * 1024; // 420MB
 // ============================================================================
 // AUTH SCHEMA VERSION - INCREMENT ON BAILEYS KEY FORMAT CHANGES
 // ============================================================================
-const AUTH_VERSION = 4; // Simplified auth format
+// AUTH_VERSION moved to authSystem.js - use AUTH_SCHEMA_VERSION instead
 
 // ============================================================================
 // INSTANCE ID - For logging and debugging
@@ -198,34 +211,37 @@ function isDuplicateMessage(accountId, jid, message) {
  * Generate stable per-account browser fingerprint
  * CRITICAL: Each account MUST have a unique fingerprint to avoid detection
  * WhatsApp flags multiple accounts using identical device signatures
+ * 
+ * NEW: Now uses the robust deviceFingerprintManager with persistent device IDs
  */
-function getAccountBrowserFingerprint(accountId) {
-  // Generate a deterministic but unique browser version per account
-  // This simulates different Chrome installations on different machines
-  const hash = crypto.createHash('sha256').update(accountId).digest('hex');
-  
-  // Use current Chrome version (update this quarterly!)
-  // As of Jan 2026, Chrome is at version 131+
-  const majorVersion = 131;
-  const minorVersion = parseInt(hash.slice(0, 4), 16) % 100;
-  
-  // Vary the platform slightly based on hash
-  const platforms = ['Windows', 'Windows 10', 'Windows 11'];
-  const platformIndex = parseInt(hash.slice(4, 6), 16) % platforms.length;
-  
-  return [`Chrome (${platforms[platformIndex]})`, 'Chrome', `${majorVersion}.0.6778.${minorVersion}`];
+async function getAccountBrowserFingerprint(accountId) {
+  try {
+    const fingerprint = await deviceFingerprintManager.getFingerprint(accountId);
+    return fingerprint.browser; // [browserName, platform, version]
+  } catch (error) {
+    logger.warn(`[Fingerprint] Failed to get fingerprint for ${accountId}, using fallback: ${error.message}`);
+    // Fallback to deterministic generation
+    const hash = crypto.createHash('sha256').update(accountId).digest('hex');
+    const majorVersion = 131;
+    const minorVersion = parseInt(hash.slice(0, 4), 16) % 100;
+    const platforms = ['Windows', 'Windows 10', 'Windows 11'];
+    const platformIndex = parseInt(hash.slice(4, 6), 16) % platforms.length;
+    return [`Chrome (${platforms[platformIndex]})`, 'Chrome', `${majorVersion}.0.6778.${minorVersion}`];
+  }
 }
 
 // ============================================================================
-// SIMPLIFIED AUTH STATE MANAGER - Based on Baileys useMultiFileAuthState
+// ROBUST AUTH STATE MANAGER - Anti-Ban Protection
 // ============================================================================
 //
-// KEY PRINCIPLE: Use Baileys' own useMultiFileAuthState for local files,
-// then sync to database ONLY on connection.open and periodic intervals.
+// Uses the new authStateManager from authSystem.js which provides:
+// - Atomic file writes with backup recovery
+// - Debounced credential saves
+// - Multi-layer caching (Memory → Database)
+// - Session validation and corruption recovery
+// - Proper Signal key lifecycle management
 //
-// This is the SAME pattern that works for millions of users.
 // QR PHASE HANDLING:
-//
 // During QR scanning, local files are VOLATILE (not yet persisted to DB).
 // If restartRequired (515) occurs during QR:
 //   → DON'T wipe local files (they contain in-progress handshake)
@@ -237,34 +253,28 @@ function getAccountBrowserFingerprint(accountId) {
 // ============================================================================
 
 /**
- * SIMPLIFIED AUTH: Restore session from database to local files
- * Only called when starting a client that has saved auth
+ * ROBUST AUTH: Restore session from database to local files
+ * Uses the new authStateManager for atomic operations and recovery
  */
 async function restoreAuthFromDatabase(accountId) {
-  const sessionPath = path.join('./wa-sessions-temp', accountId);
+  const sessionPath = authStateManager.getSessionPath(accountId);
   
-  // Check if local files exist and are recent (within last 5 minutes)
-  // If so, prefer local files over database (prevents destroying in-progress QR handshake)
-  const credsPath = path.join(sessionPath, 'creds.json');
-  if (fs.existsSync(credsPath)) {
-    try {
-      const stats = fs.statSync(credsPath);
-      const ageMs = Date.now() - stats.mtimeMs;
-      if (ageMs < 300000) { // 5 minutes
-        logger.info(`[Auth] Using recent local files for ${accountId} (${Math.round(ageMs/1000)}s old)`);
-        return { restored: true, sessionPath };
-      }
-    } catch (e) {
-      // Ignore stat errors
+  // Check if session exists and is valid
+  const hasSession = await authStateManager.sessionExists(accountId);
+  const isRegistered = await sessionValidator.isRegistered(accountId);
+  
+  if (hasSession && isRegistered) {
+    // Validate session integrity
+    const isValid = await sessionValidator.validateSession(accountId);
+    if (isValid) {
+      logger.info(`[Auth] ✅ Valid session exists for ${accountId}`);
+      return { restored: true, sessionPath };
+    } else {
+      logger.warn(`[Auth] Session validation failed for ${accountId}, will try DB restore`);
     }
   }
   
-  // Ensure clean directory for restore
-  if (fs.existsSync(sessionPath)) {
-    fs.rmSync(sessionPath, { recursive: true, force: true });
-  }
-  fs.mkdirSync(sessionPath, { recursive: true });
-
+  // Try to restore from database
   try {
     const sessionData = await db.getSessionData(accountId);
     
@@ -283,7 +293,7 @@ async function restoreAuthFromDatabase(accountId) {
     }
 
     // Version check
-    if ((decoded.version || 1) < AUTH_VERSION) {
+    if ((decoded.version || 1) < AUTH_SCHEMA_VERSION) {
       logger.warn(`[Auth] Old auth version for ${accountId}, clearing`);
       await db.clearSessionData(accountId);
       return { restored: false, sessionPath };
@@ -296,19 +306,33 @@ async function restoreAuthFromDatabase(accountId) {
       return { restored: false, sessionPath };
     }
 
-    // Restore creds.json
-    fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(decoded.creds, null, 2));
+    // Ensure session directory exists
+    if (!fs.existsSync(sessionPath)) {
+      fs.mkdirSync(sessionPath, { recursive: true });
+    }
 
-    // Restore all key files
+    // Restore creds.json (with atomic write)
+    const credsPath = path.join(sessionPath, 'creds.json');
+    const tempCredsPath = credsPath + '.tmp';
+    fs.writeFileSync(tempCredsPath, JSON.stringify(decoded.creds, null, 2));
+    fs.renameSync(tempCredsPath, credsPath);
+
+    // Restore all key files (atomic writes)
     let keyCount = 0;
     if (decoded.keys && typeof decoded.keys === 'object') {
       for (const [filename, data] of Object.entries(decoded.keys)) {
         if (filename && data) {
-          fs.writeFileSync(path.join(sessionPath, filename), JSON.stringify(data, null, 2));
+          const keyPath = path.join(sessionPath, filename);
+          const tempKeyPath = keyPath + '.tmp';
+          fs.writeFileSync(tempKeyPath, JSON.stringify(data, null, 2));
+          fs.renameSync(tempKeyPath, keyPath);
           keyCount++;
         }
       }
     }
+
+    // Invalidate session validator cache
+    sessionValidator.invalidateCache(accountId);
 
     logger.info(`[Auth] ✅ Restored ${accountId}: creds + ${keyCount} keys`);
     return { restored: true, sessionPath };
@@ -320,19 +344,20 @@ async function restoreAuthFromDatabase(accountId) {
 }
 
 /**
- * SIMPLIFIED AUTH: Save current session to database
- * Called after connection.open and periodically
+ * ROBUST AUTH: Save current session to database
+ * Uses atomic operations and proper error handling
  */
 async function saveAuthToDatabase(accountId, sessionPath) {
   try {
     const credsPath = path.join(sessionPath, 'creds.json');
     
-    // Check existence asynchronously
-    try {
-      if (!fs.existsSync(credsPath)) return false;
-    } catch { return false; }
+    // Check existence
+    if (!fs.existsSync(credsPath)) {
+      logger.debug(`[Auth] Skip save - no creds.json for ${accountId}`);
+      return false;
+    }
 
-    // Read creds (async to prevent blocking loop)
+    // Read creds
     const credsData = await fs.promises.readFile(credsPath, 'utf-8');
     const creds = JSON.parse(credsData);
 
@@ -342,13 +367,13 @@ async function saveAuthToDatabase(accountId, sessionPath) {
       return false;
     }
 
-    // Collect all key files asynchronously
+    // Collect all key files
     const keys = {};
     const files = await fs.promises.readdir(sessionPath);
     
     // Process files in parallel
     const filePromises = files.map(async (file) => {
-      if (file !== 'creds.json' && file.endsWith('.json')) {
+      if (file !== 'creds.json' && file.endsWith('.json') && !file.includes('.tmp') && !file.includes('.bak')) {
         try {
           const content = await fs.promises.readFile(path.join(sessionPath, file), 'utf-8');
           keys[file] = JSON.parse(content);
@@ -357,11 +382,13 @@ async function saveAuthToDatabase(accountId, sessionPath) {
     });
     
     await Promise.all(filePromises);
+    
+    await Promise.all(filePromises);
 
     const authBlob = {
       creds,
       keys,
-      version: AUTH_VERSION,
+      version: AUTH_SCHEMA_VERSION,
       savedAt: new Date().toISOString()
     };
 
@@ -680,12 +707,19 @@ class WhatsAppManager {
       return null;
     }
 
+    // ANTI-BAN: Check if account is in cooldown (too many disconnects)
+    const cooldownStatus = connectionQualityMonitor.isInCooldown(accountId);
+    if (cooldownStatus.inCooldown) {
+      const remainingMins = Math.round(cooldownStatus.remainingMs / 60000);
+      logger.warn(`[Auth] Account ${accountId} in cooldown - ${remainingMins} minutes remaining`);
+      throw new Error(`Account in cooldown for ${remainingMins} more minutes`);
+    }
+
     // ANTI-BAN: Check connection lock to prevent duplicate connections
     const existingLock = connectionLocks.get(accountId);
     if (existingLock && existingLock.instanceId !== INSTANCE_ID) {
       const lockAge = Date.now() - existingLock.timestamp;
       // Lock expires after 15 minutes (in case instance crashed)
-      // Extended from 5 min to 15 min to prevent dual-connection detection
       if (lockAge < 900000) {
         logger.warn(`[Auth] Account ${accountId} locked by another instance (${existingLock.instanceId}). Waiting...`);
         throw new Error('Account is connected from another instance');
@@ -695,7 +729,12 @@ class WhatsAppManager {
     // Acquire lock
     connectionLocks.set(accountId, { timestamp: Date.now(), instanceId: INSTANCE_ID });
 
-    const sessionPath = path.join('./wa-sessions-temp', accountId);
+    // ANTI-BAN: Add human-like connection delay (don't connect instantly)
+    const connectDelay = humanBehaviorSimulator.randomDelay(TIMING.connectDelayMinMs, TIMING.connectDelayMaxMs);
+    logger.debug(`[Auth] Waiting ${connectDelay}ms before connecting ${accountId} (human-like delay)`);
+    await new Promise(resolve => setTimeout(resolve, connectDelay));
+
+    const sessionPath = authStateManager.getSessionPath(accountId);
 
     try {
       // STEP 1: Restore auth from database (unless skipRestore=true for QR cycling)
@@ -707,7 +746,12 @@ class WhatsAppManager {
         }
       }
 
-      // STEP 2: Use Baileys' official useMultiFileAuthState (proven, battle-tested)
+      // STEP 2: Ensure session directory exists
+      if (!fs.existsSync(sessionPath)) {
+        fs.mkdirSync(sessionPath, { recursive: true });
+      }
+
+      // STEP 3: Use Baileys' official useMultiFileAuthState
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
       
       // Store for periodic DB saves
@@ -716,9 +760,12 @@ class WhatsAppManager {
       const { version } = await fetchLatestBaileysVersion();
       logger.info(`Using Baileys version: ${version.join('.')}`);
 
-      // Per-account stable browser fingerprint
-      const browserFingerprint = getAccountBrowserFingerprint(accountId);
-      logger.debug(`[Auth] Browser fingerprint for ${accountId}: ${browserFingerprint.join('/')}`);
+      // STEP 4: Get per-account stable browser fingerprint (NEW ROBUST SYSTEM)
+      const browserFingerprint = await getAccountBrowserFingerprint(accountId);
+      logger.info(`[Auth] Browser fingerprint for ${accountId}: ${browserFingerprint.join(' / ')}`);
+
+      // STEP 5: Get randomized keepalive interval (anti-pattern detection)
+      const keepAliveMs = humanBehaviorSimulator.getHeartbeatInterval();
 
       const sock = makeWASocket({
         version,
@@ -731,22 +778,19 @@ class WhatsAppManager {
         browser: browserFingerprint,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: undefined,
-        keepAliveIntervalMs: 30000,
+        keepAliveIntervalMs: keepAliveMs, // Randomized to avoid pattern detection
         emitOwnEvents: true,
         // Anti-ban: Don't mark online immediately to avoid "bot-like" activity spikes
         markOnlineOnConnect: false, 
-        fireInitQueries: true,       // Added: Ensures proper handshake with WhatsApp
+        fireInitQueries: true,
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
         // Message retry configuration - fixes "Waiting for this message" issue
-        // CRITICAL: Use NodeCache for retry counter (tracks retry attempts, not messages!)
         msgRetryCounterCache: msgRetryCounterCache,
-        // Anti-ban: Increased delay to prevent rapid-fire retry loops
-        retryRequestDelayMs: 350, // Match Evolution API's setting
-        maxMsgRetryCount: 4,      // Match Evolution API's setting
+        retryRequestDelayMs: 350,
+        maxMsgRetryCount: 4,
         getMessage: async (key) => {
           // CRITICAL: This is called by Baileys when WhatsApp requests a message resend
-          // If we don't return the message, the receiver sees "Waiting for this message"
           logger.info(`[getMessage] ⚡ Retry requested for message ${key.id?.slice(0, 20)}... remoteJid: ${key.remoteJid?.slice(0, 20)}`);
           
           // L1: Check in-memory cache first (fastest)
@@ -781,6 +825,9 @@ class WhatsAppManager {
 
       this.clients.set(accountId, sock);
       this.accountStatus.set(accountId, 'initializing');
+
+      // Record activity for human behavior tracking
+      humanBehaviorSimulator.recordActivity(accountId);
 
       // Setup event handlers
       this.setupBaileysEventHandlers(sock, accountId, saveCreds);
@@ -869,6 +916,10 @@ class WhatsAppManager {
         this.reconnecting.delete(accountId);
         this.reconnectAttempts.delete(accountId);
 
+        // ANTI-BAN: Record successful connection for quality monitoring
+        connectionQualityMonitor.recordSuccess(accountId);
+        humanBehaviorSimulator.recordActivity(accountId);
+
         // =====================================================================
         // STABILIZATION SAVE TO DATABASE - Critical for crash recovery
         // =====================================================================
@@ -885,20 +936,21 @@ class WhatsAppManager {
           }
         }, 5000); // Wait 5 seconds for keys to stabilize
 
-        // ANTI-BAN: Don't immediately set presence to 'available'
-        // Let it happen naturally after 30-60 seconds (more human-like)
-        // Immediate online status after connect is a bot indicator
-        const presenceDelay = 30000 + Math.random() * 30000; // 30-60 seconds
+        // ANTI-BAN: Use human behavior simulator for presence delay
+        const presenceDelay = await humanBehaviorSimulator.simulatePresenceDelay();
+        // Add additional random delay of 30-60 seconds on top
+        const totalPresenceDelay = presenceDelay + 30000 + Math.random() * 30000;
+        
         setTimeout(async () => {
           try {
             if (this.accountStatus.get(accountId) === 'ready') {
               await sock.sendPresenceUpdate('available');
-              logger.info(`[${accountId}] Presence set to 'available' (delayed)`);
+              logger.info(`[${accountId}] Presence set to 'available' (delayed ${Math.round(totalPresenceDelay/1000)}s)`);
             }
           } catch (e) {
             logger.warn(`[${accountId}] Failed to set presence: ${e.message}`);
           }
-        }, presenceDelay);
+        }, totalPresenceDelay);
 
         this.emitToAll('ready', { accountId, phoneNumber });
         logger.info(`✅ WhatsApp ready for ${accountId} (${phoneNumber})`);
@@ -911,6 +963,9 @@ class WhatsAppManager {
 
         logger.warn(`Disconnected ${accountId}: ${reason} (code: ${statusCode})`);
 
+        // ANTI-BAN: Record disconnect for quality monitoring
+        connectionQualityMonitor.recordDisconnect(accountId, reason);
+
         // Handle different disconnect reasons
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
@@ -921,7 +976,6 @@ class WhatsAppManager {
         const isRestartRequired = statusCode === 515 || statusCode === DisconnectReason.restartRequired;
 
         // Special handling for "Connection Closed" (428) - Precondition Required
-        // This often happens due to network flakiness or server-side closure
         const isConnectionClosed = statusCode === 428;
 
         if (statusCode === DisconnectReason.loggedOut) {
@@ -931,18 +985,15 @@ class WhatsAppManager {
           // Clear database auth
           await db.clearSessionData(accountId);
           
-          // Clear local files
-          const sessionPath = path.join('./wa-sessions-temp', accountId);
-          if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-          }
+          // Clear local files using new auth manager
+          await authStateManager.clearSession(accountId);
           
           await db.updateAccount(accountId, {
-            status: 'disconnected', // Changed from 'logged_out' to match SQL constraint
+            status: 'disconnected',
             error_message: 'Logged out - QR scan required',
             updated_at: new Date().toISOString()
           });
-          this.accountStatus.set(accountId, 'disconnected'); // Match SQL status
+          this.accountStatus.set(accountId, 'disconnected');
           this.clients.delete(accountId);
           this.authStates.delete(accountId);
           this.reconnectAttempts.delete(accountId);
@@ -951,7 +1002,7 @@ class WhatsAppManager {
           const attempts = this.reconnectAttempts.get(accountId) || { count: 0, lastAttempt: 0 };
           const now = Date.now();
           
-          // ANTI-BAN: Track over 1 hour window (was 5 minutes)
+          // ANTI-BAN: Track over 1 hour window
           if (now - attempts.lastAttempt > 3600000) {
             attempts.count = 0;
           }
@@ -960,9 +1011,10 @@ class WhatsAppManager {
           attempts.lastAttempt = now;
           this.reconnectAttempts.set(accountId, attempts);
           
-          const backoffMs = Math.min(30000 * Math.pow(2, attempts.count - 1), 600000); // 30s, 60s, 120s, max 10min
+          // ANTI-BAN: Use human behavior simulator for backoff
+          const backoffMs = connectionQualityMonitor.getRecommendedDelay(accountId);
           
-          // ANTI-BAN: Only allow 2 attempts per hour (was 3 per 5 min)
+          // ANTI-BAN: Only allow 2 attempts per hour
           if (attempts.count >= 2) {
             logger.error(`Connection replaced ${attempts.count} times for ${accountId} - STOPPING to prevent ban`);
             logger.error(`Close WhatsApp on other devices and wait 1 hour before reconnecting`);
@@ -990,7 +1042,6 @@ class WhatsAppManager {
         } else if (isRestartRequired || isConnectionClosed) {
           // restartRequired (515) - Normal during QR scanning
           // Connection Closed (428) - Retryable error
-          // Don't wipe local files - they contain in-progress handshake
           const currentStatus = this.accountStatus.get(accountId);
           const isQrPhase = currentStatus === 'qr_ready' || currentStatus === 'needs_qr';
           
@@ -1001,23 +1052,19 @@ class WhatsAppManager {
             this.accountStatus.set(accountId, 'reconnecting');
           }
           
-          // ANTI-BAN: Use longer delays with jitter to avoid pattern detection
-          const baseDelay = 15000; // 15 seconds base
-          const jitter = Math.floor(Math.random() * 15000); // 0-15s random
-          const reconnectDelay = baseDelay + jitter;
+          // ANTI-BAN: Use connection quality monitor for intelligent backoff
+          const reconnectDelay = connectionQualityMonitor.getRecommendedDelay(accountId);
           
           logger.info(`[Reconnect] Will retry ${accountId} in ${Math.round(reconnectDelay/1000)}s...`);
           
           setTimeout(async () => {
             if (!this.isShuttingDown && !this.deletedAccounts.has(accountId)) {
-              // If it was a 428 error, we definitely want to try reconnecting
               const shouldRetry = isConnectionClosed || this.accountStatus.get(accountId) !== 'ready';
               
               if (shouldRetry) {
                 logger.info(`[Reconnect] Retrying connection for ${accountId}...`);
                 try {
                   // skipRestore=true preserves local handshake files
-                  // IMPORTANT: For 428 errors, we might want to skip restore to keep session state
                   await this.startBaileysClient(accountId, true);
                 } catch (err) {
                   logger.error(`[Reconnect] Failed for ${accountId}:`, err.message);
@@ -1027,12 +1074,12 @@ class WhatsAppManager {
             }
           }, reconnectDelay);
         } else if (shouldReconnect && !this.isShuttingDown) {
-          // Normal disconnect - reconnect after delay
+          // Normal disconnect - reconnect with intelligent backoff
           this.accountStatus.set(accountId, 'reconnecting');
           this.reconnectAttempts.delete(accountId);
           
-          // ANTI-BAN: Longer delay with jitter for normal disconnects
-          const normalDelay = 10000 + Math.floor(Math.random() * 10000); // 10-20s
+          // ANTI-BAN: Use connection quality monitor for delay
+          const normalDelay = connectionQualityMonitor.getRecommendedDelay(accountId);
           logger.info(`[Reconnect] Will reconnect ${accountId} in ${Math.round(normalDelay/1000)}s...`);
           
           setTimeout(async () => {
@@ -1394,7 +1441,6 @@ class WhatsAppManager {
       await rateLimiter.waitWithJitter(accountId);
 
       // CRITICAL FIX: Retreive socket specifically AFTER the wait
-      // A reconnection might have happened during the delay
       let sock = this.clients.get(accountId);
       let status = this.accountStatus.get(accountId);
 
@@ -1402,27 +1448,29 @@ class WhatsAppManager {
         throw new Error(`Client not ready after wait: ${status}`);
       }
 
-      // Show typing indicator (human-like behavior)
-      // ANTI-BAN: Calculate typing time based on message length
-      // Average human types ~200 chars/min = 3.3 chars/sec
-      const charsPerSecond = 3.3;
-      const minTypingMs = 1500;
-      const maxTypingMs = 8000;
-      const baseTyping = Math.min(maxTypingMs, Math.max(minTypingMs, (message.length / charsPerSecond) * 1000));
-      const typingJitter = Math.random() * 2000; // 0-2s random
+      // ANTI-BAN: Use human behavior simulator for typing indicator
+      // This simulates realistic human typing patterns
+      const typingDelayMs = Math.min(
+        8000,
+        Math.max(1500, message.length * humanBehaviorSimulator.randomDelay(TIMING.typingMinMs, TIMING.typingMaxMs))
+      );
       
-      if (baseTyping > 0) {
-        try {
-          await sock.presenceSubscribe(jid);
-          await sock.sendPresenceUpdate('composing', jid);
-          await new Promise(resolve => setTimeout(resolve, baseTyping + typingJitter));
-          await sock.sendPresenceUpdate('paused', jid);
-        } catch (e) { /* ignore presence errors */ }
-      }
+      try {
+        await sock.presenceSubscribe(jid);
+        await sock.sendPresenceUpdate('composing', jid);
+        
+        // Add jitter to typing duration
+        await humanBehaviorSimulator.waitWithJitter(typingDelayMs, 0.3);
+        
+        await sock.sendPresenceUpdate('paused', jid);
+      } catch (e) { /* ignore presence errors */ }
 
       // Re-fetch socket one last time before critical send
       sock = this.clients.get(accountId);
       if (!sock) throw new Error('Client lost connection during typing delay');
+
+      // Record activity for human behavior tracking
+      humanBehaviorSimulator.recordActivity(accountId);
 
       // Create message content
       const msgContent = { text: message };
