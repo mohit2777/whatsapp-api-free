@@ -1458,7 +1458,6 @@ class WhatsAppManager {
       } else {
         logger.warn(`[MsgStore] ⚠️ Could not store message - missing key.id or message body`);
       }
-      }
 
       await db.updateAccount(accountId, {
         last_active_at: new Date().toISOString()
