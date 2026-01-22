@@ -1449,17 +1449,17 @@ class WhatsAppManager {
       }
 
       // ANTI-BAN: Use human behavior simulator for typing indicator
-      // This simulates realistic human typing patterns
-      const typingDelayMs = Math.min(
-        8000,
-        Math.max(1500, message.length * humanBehaviorSimulator.randomDelay(TIMING.typingMinMs, TIMING.typingMaxMs))
-      );
+      // Calculate typing time based on message length (~40 WPM = ~200ms per char)
+      // Min 1.5s for short messages, max 12s for very long messages
+      const charsPerSecond = humanBehaviorSimulator.randomDelay(4, 8); // 4-8 chars/sec (30-60 WPM)
+      const baseTypingMs = (message.length / charsPerSecond) * 1000;
+      const typingDelayMs = Math.min(12000, Math.max(1500, baseTypingMs));
       
       try {
         await sock.presenceSubscribe(jid);
         await sock.sendPresenceUpdate('composing', jid);
         
-        // Add jitter to typing duration
+        // Add jitter to typing duration (±30%)
         await humanBehaviorSimulator.waitWithJitter(typingDelayMs, 0.3);
         
         await sock.sendPresenceUpdate('paused', jid);
@@ -1579,9 +1579,15 @@ class WhatsAppManager {
       }
 
       // Show typing indicator with jitter (don't fail media send on presence errors)
-      // ANTI-BAN: Longer, more natural typing simulation
-      const typingDelay = parseInt(process.env.TYPING_DELAY_MS) || 2500; // 2.5s base
+      // ANTI-BAN: Calculate typing time based on caption length (if any)
+      // For media, also add base time for "selecting/uploading" the file
+      const captionLength = caption ? caption.length : 0;
+      const charsPerSecond = 4 + Math.random() * 4; // 4-8 chars/sec
+      const captionTypingMs = (captionLength / charsPerSecond) * 1000;
+      const mediaSelectionMs = 2000 + Math.random() * 2000; // 2-4s to "select" media
+      const typingDelay = Math.min(15000, Math.max(2500, captionTypingMs + mediaSelectionMs));
       const typingJitter = Math.floor(Math.random() * 1500); // 0-1.5s random
+      
       if (typingDelay > 0) {
         try {
           await sock.presenceSubscribe(jid);
