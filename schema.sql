@@ -53,7 +53,13 @@ CREATE TABLE IF NOT EXISTS webhooks (
 
 COMMENT ON TABLE webhooks IS 'Webhook configurations for message forwarding';
 
--- Message Logs Table
+-- ============================================================================
+-- Message Logs Table (DEPRECATED - NOT USED IN CODE)
+-- This table was designed for message activity logging but is not currently
+-- used by the application. It's kept for backwards compatibility with existing
+-- database views and functions. You can safely DROP this table if not needed.
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS message_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     account_id UUID NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,

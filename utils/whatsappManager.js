@@ -518,18 +518,23 @@ const rateLimiter = new AccountRateLimiter();
 // In-memory acts as L1 cache, database is persistent L2 storage
 // Key: messageId, Value: { message, timestamp, accountId }
 const globalMessageStore = new Map();
-const MESSAGE_STORE_MAX_SIZE = 1000;
-const MESSAGE_STORE_TTL = 10 * 60 * 1000; // 10 minutes in-memory
+const MESSAGE_STORE_MAX_SIZE = 5000; // Increased for better retry coverage
+const MESSAGE_STORE_TTL = 24 * 60 * 60 * 1000; // 24 hours in-memory (match DB)
 
-// Cleanup old messages periodically (in-memory + database)
+// Cleanup old messages periodically (in-memory only - DB has its own cleanup)
 setInterval(() => {
   const now = Date.now();
+  let cleaned = 0;
   for (const [id, data] of globalMessageStore) {
     if (now - data.timestamp > MESSAGE_STORE_TTL) {
       globalMessageStore.delete(id);
+      cleaned++;
     }
   }
-}, 60000);
+  if (cleaned > 0) {
+    logger.debug(`[MsgStore] Cleaned ${cleaned} expired messages from memory cache`);
+  }
+}, 5 * 60 * 1000); // Every 5 minutes
 
 // Cleanup old database messages every hour
 setInterval(async () => {
@@ -1022,7 +1027,7 @@ class WhatsAppManager {
               status: 'disconnected',
               error_message: 'Connection replaced multiple times - close WhatsApp on other devices and try again in 1 hour',
               updated_at: new Date().toISOString()
-            }).catch(() => {});
+            }).catch(e => logger.debug(`DB update failed (non-critical): ${e.message}`));
             this.accountStatus.set(accountId, 'disconnected');
             this.clients.delete(accountId);
           } else {
@@ -1152,8 +1157,8 @@ class WhatsAppManager {
 
       for (const message of messages) {
         try {
-          // CRITICAL FIX: Store ALL incoming messages for retry support
-          // This fixes "Waiting for this message" when replying to received messages
+          // CRITICAL FIX: Store ALL messages for retry support
+          // This fixes "Waiting for this message" issue
           if (message.key?.id && message.message) {
             // L1: Store in memory (fast access)
             if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
@@ -1166,15 +1171,24 @@ class WhatsAppManager {
               accountId
             });
             
-            // L2: Persist to database (survives restarts)
-            // Fire and forget - don't block message handling
-            db.storeMessage(accountId, message.key.id, message.message, 'in', message.key.remoteJid)
-              .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
-            
-            logger.info(`[MsgStore] ✅ Stored incoming message ${message.key.id?.slice(0, 15)}... from ${message.key.remoteJid?.slice(0, 15)}`);
+            // L2: Persist to database - AWAIT to ensure reliability
+            const direction = message.key.fromMe ? 'out' : 'in';
+            try {
+              const stored = await db.storeMessage(accountId, message.key.id, message.message, direction, message.key.remoteJid);
+              if (stored) {
+                logger.info(`[MsgStore] ✅ Stored ${direction} message ${message.key.id?.slice(0, 15)}... in DB`);
+              } else {
+                logger.warn(`[MsgStore] ⚠️ Failed to store ${direction} message ${message.key.id?.slice(0, 15)}...`);
+              }
+            } catch (e) {
+              logger.error(`[MsgStore] ❌ DB error storing message: ${e.message}`);
+            }
           }
           
-          await this.handleIncomingMessage(sock, accountId, message);
+          // Only process incoming messages (not our own)
+          if (!message.key.fromMe) {
+            await this.handleIncomingMessage(sock, accountId, message);
+          }
         } catch (error) {
           logger.error(`Message handler error for ${accountId}:`, error);
         }
@@ -1376,6 +1390,25 @@ class WhatsAppManager {
                 } catch {}
                 
                 const result = await sock.sendMessage(replyJid, { text: aiResponse });
+                
+                // CRITICAL: Store chatbot response for getMessage retry support
+                // Even though messages.upsert should catch it (emitOwnEvents: true),
+                // we store explicitly to prevent any race conditions
+                if (result?.key?.id && result.message) {
+                  if (globalMessageStore.size >= MESSAGE_STORE_MAX_SIZE) {
+                    const oldestKey = globalMessageStore.keys().next().value;
+                    globalMessageStore.delete(oldestKey);
+                  }
+                  globalMessageStore.set(result.key.id, {
+                    message: result.message,
+                    timestamp: Date.now(),
+                    accountId
+                  });
+                  // Also persist to DB
+                  db.storeMessage(accountId, result.key.id, result.message, 'out', replyJid).catch(e => {
+                    logger.warn(`[Chatbot] DB store error: ${e.message}`);
+                  });
+                }
                 
                 // ANTI-BAN: Record message for rate limiting
                 rateLimiter.recordMessage(accountId);
@@ -2093,7 +2126,7 @@ class WhatsAppManager {
         status: 'disconnected',
         error_message: 'No saved session - QR scan required',
         updated_at: new Date().toISOString()
-      }).catch(() => {});
+      }).catch(e => logger.debug(`DB update failed (non-critical): ${e.message}`));
       return { status: 'disconnected' };
     }
 
@@ -2104,7 +2137,7 @@ class WhatsAppManager {
         status: 'initializing',
         error_message: null,
         updated_at: new Date().toISOString()
-      }).catch(() => {});
+      }).catch(e => logger.debug(`DB update failed (non-critical): ${e.message}`));
 
       this.qrCodes.delete(account.id);
 
@@ -2123,7 +2156,7 @@ class WhatsAppManager {
         status: 'disconnected',
         error_message: error.message,
         updated_at: new Date().toISOString()
-      }).catch(() => {});
+      }).catch(e => logger.debug(`DB update failed (non-critical): ${e.message}`));
 
       this.accountStatus.set(account.id, 'disconnected');
       this.reconnecting.delete(account.id);

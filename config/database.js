@@ -1246,17 +1246,37 @@ const db = {
    */
   async getMessage(accountId, messageId) {
     try {
-      const { data, error } = await supabase
+      // First try with account_id filter (most efficient)
+      let { data, error } = await supabase
         .from('wa_messages')
         .select('message_content')
         .eq('account_id', accountId)
         .eq('message_id', messageId)
         .single();
 
-      if (error || !data) {
-        return null;
+      if (!error && data) {
+        logger.debug(`[MsgStore] getMessage: Found message ${messageId?.slice(0, 15)}... for account ${accountId?.slice(0, 8)}`);
+        return data.message_content;
       }
-      return data.message_content;
+      
+      // Fallback: Search by message_id only (in case of account mismatch)
+      // This can happen if message was stored before socket reconnect
+      if (error || !data) {
+        const fallback = await supabase
+          .from('wa_messages')
+          .select('message_content, account_id')
+          .eq('message_id', messageId)
+          .limit(1)
+          .single();
+        
+        if (!fallback.error && fallback.data) {
+          logger.info(`[MsgStore] getMessage: Found message ${messageId?.slice(0, 15)}... via fallback (different account: ${fallback.data.account_id?.slice(0, 8)})`);
+          return fallback.data.message_content;
+        }
+      }
+      
+      logger.debug(`[MsgStore] getMessage: Message ${messageId?.slice(0, 15)}... not found in DB`);
+      return null;
     } catch (error) {
       logger.warn(`[MsgStore] Error retrieving message: ${error.message}`);
       return null;
