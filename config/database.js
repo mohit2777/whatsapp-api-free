@@ -1283,6 +1283,37 @@ const db = {
       logger.warn(`[MsgStore] Cleanup error: ${error.message}`);
       return false;
     }
+  },
+
+  /**
+   * Verify wa_messages table exists (call at startup)
+   * @returns {boolean} - true if table exists and is accessible
+   */
+  async verifyMessageStoreTable() {
+    try {
+      // Try to select from the table (will fail if table doesn't exist)
+      const { error } = await supabase
+        .from('wa_messages')
+        .select('id')
+        .limit(1);
+
+      if (error) {
+        if (error.message?.includes('does not exist') || error.code === '42P01') {
+          logger.error(`[MsgStore] ❌ CRITICAL: wa_messages table does not exist!`);
+          logger.error(`[MsgStore] ❌ This will cause "Waiting for this message" errors.`);
+          logger.error(`[MsgStore] ❌ Please run the schema.sql file in your Supabase SQL editor.`);
+          return false;
+        }
+        logger.warn(`[MsgStore] ⚠️ Error checking wa_messages table: ${error.message}`);
+        return false;
+      }
+      
+      logger.info(`[MsgStore] ✅ wa_messages table verified`);
+      return true;
+    } catch (error) {
+      logger.error(`[MsgStore] ❌ Error verifying message store table: ${error.message}`);
+      return false;
+    }
   }
 };
 

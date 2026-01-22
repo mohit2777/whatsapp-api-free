@@ -1498,11 +1498,19 @@ class WhatsAppManager {
           accountId
         });
         
-        logger.info(`[MsgStore] ✅ Stored outgoing message ${result.key.id?.slice(0, 15)}... for retry support`);
+        logger.info(`[MsgStore] ✅ Memory: Stored message ${result.key.id?.slice(0, 15)}...`);
         
-        // L2: Persist to database (survives restarts)
-        db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
-          .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+        // L2: Persist to database (survives restarts) - AWAIT to ensure it's stored
+        try {
+          const dbStored = await db.storeMessage(accountId, result.key.id, result.message, 'out', jid);
+          if (dbStored) {
+            logger.info(`[MsgStore] ✅ Database: Stored message ${result.key.id?.slice(0, 15)}...`);
+          } else {
+            logger.warn(`[MsgStore] ⚠️ Database: Failed to store message ${result.key.id?.slice(0, 15)}... - retry may fail`);
+          }
+        } catch (e) {
+          logger.error(`[MsgStore] ❌ Database store error: ${e.message}`);
+        }
       } else {
         logger.warn(`[MsgStore] ⚠️ Could not store message - missing key.id or message body`);
       }
@@ -1625,11 +1633,19 @@ class WhatsAppManager {
           accountId
         });
         
-        logger.info(`[MsgStore] ✅ Stored outgoing media ${result.key.id?.slice(0, 15)}... for retry support`);
+        logger.info(`[MsgStore] ✅ Memory: Stored media ${result.key.id?.slice(0, 15)}...`);
         
-        // L2: Database persistence
-        db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
-          .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+        // L2: Database persistence - AWAIT to ensure it's stored
+        try {
+          const dbStored = await db.storeMessage(accountId, result.key.id, result.message, 'out', jid);
+          if (dbStored) {
+            logger.info(`[MsgStore] ✅ Database: Stored media ${result.key.id?.slice(0, 15)}...`);
+          } else {
+            logger.warn(`[MsgStore] ⚠️ Database: Failed to store media ${result.key.id?.slice(0, 15)}... - retry may fail`);
+          }
+        } catch (e) {
+          logger.error(`[MsgStore] ❌ Database store error: ${e.message}`);
+        }
       } else {
         logger.warn(`[MsgStore] ⚠️ Could not store media message - missing key.id or message body`);
       }
@@ -1754,11 +1770,19 @@ class WhatsAppManager {
         accountId
       });
       
-      logger.info(`[MsgStore] ✅ Stored buttons message ${result.key.id?.slice(0, 15)}... for retry support`);
+      logger.info(`[MsgStore] ✅ Memory: Stored buttons message ${result.key.id?.slice(0, 15)}...`);
       
-      // L2: Database persistence
-      db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
-        .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+      // L2: Database persistence - AWAIT to ensure it's stored
+      try {
+        const dbStored = await db.storeMessage(accountId, result.key.id, result.message, 'out', jid);
+        if (dbStored) {
+          logger.info(`[MsgStore] ✅ Database: Stored buttons message ${result.key.id?.slice(0, 15)}...`);
+        } else {
+          logger.warn(`[MsgStore] ⚠️ Database: Failed to store buttons message - retry may fail`);
+        }
+      } catch (e) {
+        logger.error(`[MsgStore] ❌ Database store error: ${e.message}`);
+      }
     }
     
     this.metrics.messagesProcessed++;
@@ -1851,11 +1875,19 @@ class WhatsAppManager {
         accountId
       });
       
-      logger.info(`[MsgStore] ✅ Stored list message ${result.key.id?.slice(0, 15)}... for retry support`);
+      logger.info(`[MsgStore] ✅ Memory: Stored list message ${result.key.id?.slice(0, 15)}...`);
       
-      // L2: Database persistence
-      db.storeMessage(accountId, result.key.id, result.message, 'out', jid)
-        .catch(e => logger.debug(`[MsgStore] Async DB store failed: ${e.message}`));
+      // L2: Database persistence - AWAIT to ensure it's stored
+      try {
+        const dbStored = await db.storeMessage(accountId, result.key.id, result.message, 'out', jid);
+        if (dbStored) {
+          logger.info(`[MsgStore] ✅ Database: Stored list message ${result.key.id?.slice(0, 15)}...`);
+        } else {
+          logger.warn(`[MsgStore] ⚠️ Database: Failed to store list message - retry may fail`);
+        }
+      } catch (e) {
+        logger.error(`[MsgStore] ❌ Database store error: ${e.message}`);
+      }
     }
     
     this.metrics.messagesProcessed++;

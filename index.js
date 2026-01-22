@@ -1590,6 +1590,13 @@ async function initializeApp() {
     await fsExtra.ensureDir('./sessions');
     await fsExtra.ensureDir('./wa-sessions-temp');
 
+    // CRITICAL: Verify wa_messages table exists (prevents "Waiting for this message")
+    const msgTableOk = await db.verifyMessageStoreTable();
+    if (!msgTableOk) {
+      logger.error('⚠️⚠️⚠️ MESSAGE STORE TABLE MISSING - Messages will show "Waiting for this message" ⚠️⚠️⚠️');
+      logger.error('Run the schema.sql file in Supabase SQL Editor to create the wa_messages table.');
+    }
+
     // Initialize existing accounts from Supabase
     await whatsappManager.initializeExistingAccounts();
     
